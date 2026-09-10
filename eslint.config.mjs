@@ -12,6 +12,8 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
+    // tsconfig.harness.json 的编译产物，与 .next/ 同级，不是待检查的源码
+    ".harness/**",
   ]),
 ]);
 

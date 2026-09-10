@@ -39,3 +39,12 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# harness 编译产物（tsconfig.harness.json -> .harness/），不是业务源码
+/.harness/
+/.harness-onboarding/
+/.harness-storage/
+
+# 临时空文件
+/next
+/qingshe@0.1.0
