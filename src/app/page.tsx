@@ -129,7 +129,7 @@ const loadMyRecipes = (): Recipe[] => {
  * 首页三个入口。Tailwind 需要静态类名，配色直接写死在数据里。
  */
 const HOME_ENTRIES = [
-  { href: '/reality', label: '我的冰箱', icon: '❄️', tone: 'bg-blue-100' },
+  { href: '/reality', label: '我的厨房', icon: '🍳', tone: 'bg-blue-100' },
   { href: '/life-resources', label: '我的好店', icon: '🏪', tone: 'bg-green-100' },
   {
     href: '/reality?tab=reminders',
@@ -1137,10 +1137,10 @@ export default function HomePage() {
           {messages.length <= 2 && (
             <div className="grid grid-cols-2 gap-2 mb-4">
               <button 
-                onClick={() => handleQuickQuestion('冰箱里的食材能做什么？')}
+                onClick={() => handleQuickQuestion('厨房里的食材能做什么？')}
                 className="text-xs bg-gray-100 hover:bg-gray-200 text-gray-700 py-2 px-3 rounded-lg"
               >
-                冰箱里的食材能做什么？
+                厨房里的食材能做什么？
               </button>
               <button 
                 onClick={() => handleQuickQuestion('今天不知道吃什么')}

@@ -159,16 +159,16 @@ export default function RealityPage() {
           {/* 家里区域 */}
           {activeTab === 'home' && (
             <div className="space-y-6">
-              {/* 我的冰箱 - 核心功能 */}
+              {/* 我的厨房 - 核心功能 */}
               <div className="bg-white rounded-xl p-6 shadow-sm border border-gray-200">
                 <div className="flex justify-between items-start mb-4">
                   <div>
-                    <h2 className="text-xl font-bold text-gray-900">我的冰箱</h2>
+                    <h2 className="text-xl font-bold text-gray-900">我的厨房</h2>
                     <p className="text-gray-600 text-sm mt-1">看看家里还有什么，减少浪费和重复购买</p>
                   </div>
                 </div>
                 
-                {/* 冰箱概览卡片 */}
+                {/* 厨房概览卡片 */}
                 <div className="bg-blue-50 rounded-lg p-4 mb-4">
                   <div className="flex justify-between">
                     <div>
@@ -185,7 +185,7 @@ export default function RealityPage() {
                 {/* 空状态或内容 */}
                 {ingredientsCount === 0 ? (
                   <div className="text-center py-8">
-                    <h3 className="text-lg font-medium text-gray-900 mb-2">冰箱还是空的</h3>
+                    <h3 className="text-lg font-medium text-gray-900 mb-2">厨房还是空的</h3>
                     <p className="text-gray-600 mb-6">记录家里的食材，让轻舍帮你减少浪费，看看还能做什么。</p>
                     <button
                       onClick={handleAddIngredient}

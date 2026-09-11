@@ -84,14 +84,57 @@ export const FRIDGE_RECORD_ENTRY_RE =
   /(?:加|放|收|存|投|塞|挪)进(?:到)?(?:我的|冷藏|保鲜|冷冻)?(?:冰箱|冰柜)(?:里|中|内)?|放(?:到|至)(?:我的|冷藏|保鲜)?(?:冰箱|冰柜)(?:里|中|内)|(?:加入|添加到|录入|登记)(?:到|入)?(?:我的|冷藏|保鲜|冷冻)?(?:冰箱|冰柜)|(?:买|囤|拿)(?:回来|回家)?[^，,。；;]{0,12}(?:冰箱|冰柜)/;
 
 /**
- * 陈述录入：以「（我）（现在）（的）冰箱里 + （现在/目前/还/都/已经/又/新）+ 有/放了/装着/多了…」开头。
+ * 厨房区域词表（共享层唯一的词典）：用户说出口的位置词 → 真实储存位置语义。
+ *
+ * Router 用它认「橱柜里有食盐和食用油」这种陈述式录入，Parser 用它按区域分段 ——
+ * 一份词表两处读，不再长出第二套。
+ *
+ * `location === undefined` 不是缺省，是**真值**：「厨房」只是顶层场所，
+ * 不等于冷藏/冷冻/橱柜中的任何一处。Parser 只记录用户说出来的位置，
+ * 没说过的一律留 undefined，绝不在这张表里替用户做主填成「冷藏」。
+ */
+export type KitchenStorageLocation = '冷藏' | '冷冻' | '橱柜' | '常温' | '其他';
+
+export const KITCHEN_REGION_LEXICON: ReadonlyArray<{
+  words: readonly string[];
+  location: KitchenStorageLocation | undefined;
+}> = [
+  { words: ['冷藏室', '冷藏柜', '保鲜室', '保鲜层', '冰箱', '冰柜', '冷藏', '保鲜'], location: '冷藏' },
+  { words: ['冷冻室', '冷冻柜', '急冻室', '冷冻'], location: '冷冻' },
+  { words: ['橱柜', '储物柜', '碗柜', '柜子'], location: '橱柜' },
+  { words: ['常温', '室温'], location: '常温' },
+  { words: ['储物间', '杂物间', '置物架', '阳台', '抽屉'], location: '其他' },
+  // 「厨房」是产品的顶层概念，不是任何一处储存位置：命中它只证明这句话在说厨房，
+  // 位置仍然未知。undefined 是真值，下游不许拿「生鲜默认冷藏」把它填掉。
+  { words: ['厨房'], location: undefined }
+];
+
+/** 区域词 → 储存位置；undefined = 用户没说储存位置（不是「没匹配上」） */
+export function kitchenLocationOf(word: string): KitchenStorageLocation | undefined {
+  return KITCHEN_REGION_LEXICON.find((entry) => entry.words.includes(word))?.location;
+}
+
+/** 交替式按词长倒序 —— 「冷藏柜」不能被「冷藏」咬断，「冷冻室」不能被「冷冻」咬断 */
+export const KITCHEN_REGION_WORD_ALT = KITCHEN_REGION_LEXICON.flatMap((entry) => entry.words)
+  .sort((a, b) => b.length - a.length)
+  .join('|');
+
+/**
+ * 陈述录入：以「（我）（现在）（的）+ 厨房区域词 + （里面/里…）+ （时间副词）+ 有/放了/装着/多了…」开头。
  * 锚定句首是因为「冰箱里有牛肉」是事实陈述；句中出现「冰箱里有」多为
  * 查询或方案讨论的前置从句，交给守卫和其它通道处理。
- * 时间副词允许出现在冰箱词之后（「我冰箱里现在有牛肉」）：位置声明和「现在」
- * 谁前谁后都是同一句话，但整条式子仍然只认句首的「冰箱里有」这一种结构。
+ * 时间副词允许出现在区域词之后（「我冰箱里现在有牛肉」）：位置声明和「现在」
+ * 谁前谁后都是同一句话，但整条式子仍然只认句首的这一种结构。
+ *
+ * 区域词来自上面那张词表：「我橱柜里有食盐和食用油」以前不配当录入入口
+ * （门只认冰箱），整句被扔给 LLM 猜意图 —— 真人测试第一次判成 LIFE_SOLUTION
+ * 就是这么来的。门和解析器必须读同一张表，否则 Parser 认得出的句子永远走不到它面前。
  */
-export const FRIDGE_CLAIM_RE =
-  /^(?:(?:我们|我|家里)(?:现在|目前)?(?:的)?)?冰箱(?:里面|里|中|内)?(?:现在|目前|还|都|已经|又|新)?(?:有|放了|放着|装着|多了|新添了|添了)/;
+export const FRIDGE_CLAIM_RE = new RegExp(
+  '^(?:(?:我们|我|家里|咱们|咱|您|你)(?:现在|目前|还|都|已经|又|新)?(?:的)?)?(?:' +
+    KITCHEN_REGION_WORD_ALT +
+    ')(?:里面|里|中|内|室|下)?(?:现在|目前|还|都|已经|又|新)?(?:有|放了|放着|装着|装了|多了|新添了|添了|摆着)'
+);
 
 /**
  * 购买前缀：「（时间）（主语）（刚/新）买了…」。时间与主语都可选、允许两种语序
@@ -148,8 +191,31 @@ export const FRESH_INGREDIENT_NAMES = [
   '草莓', '蓝莓', '猕猴桃', '芒果', '菠萝', '梨', '桃子', '鸡蛋', '牛奶',
   '酸奶', '猪肉', '牛肉', '羊肉', '鸡肉', '鸡腿', '鸡翅', '排骨', '五花肉',
   '火腿', '培根', '香肠', '鱼', '虾', '蟹', '贝类', '面条', '米粉', '饺子',
-  '馄饨', '面包', '吐司', '芝士', '黄油', '奶油'
+  '馄饨', '面包', '吐司', '芝士', '黄油', '奶油',
+  // 调味油盐是厨房里的常备资源（消耗品侧另有词表，两边同名词不冲突）：
+  // 「我橱柜里有盐和食用油」「牛肉、鸡蛋、盐」这两句以前都掉出门外 ——
+  // 词表里没有食盐 / 食用油，Router 认不出这份名单，只能退回 chat 让 LLM 猜。
+  '食盐', '食用油'
 ];
+
+/**
+ * 口语别名 → 词表里的规范名。只收「同一件东西的另一种叫法」这种零歧义映射，
+ * 不做 ingredient ontology（不建层级、不做「油 → 植物油 / 动物油」的分裂）。
+ *
+ * 存在的理由只有一个：「盐」和「食盐」是同一件东西。若不归一，冰箱里就会
+ * 同时躺着「盐」「食盐」两条记录，之后再怎么匹配菜谱都认不出来是自家的盐。
+ */
+export const INGREDIENT_NAME_ALIASES: Readonly<Record<string, string>> = {
+  盐: '食盐',
+  油: '食用油'
+};
+
+/** 词表名 / 别名 → 规范名（别名指向的名字必须已经在词表里，harness 逐条校验） */
+export function canonicalIngredientName(word: string): string | null {
+  if (FRESH_INGREDIENT_NAMES.includes(word)) return word;
+  const alias = INGREDIENT_NAME_ALIASES[word];
+  return alias && FRESH_INGREDIENT_NAMES.includes(alias) ? alias : null;
+}
 
 /**
  * 去掉数量与量词后，整句是否只剩一个已知食材名（「两个土豆」→「土豆」）。
@@ -158,12 +224,13 @@ export const FRESH_INGREDIENT_NAMES = [
 export function bareIngredientName(message: string): string | null {
   const compact = message.replace(/\s/g, '').replace(/[。.!！~～]+$/, '');
   // 先按原词命中词表：「五花肉」的「五」是菜名的一部分，不是数量。
-  if (FRESH_INGREDIENT_NAMES.includes(compact)) return compact;
+  const exact = canonicalIngredientName(compact);
+  if (exact) return exact;
   const stripped = compact.replace(
     /^(?:来|要|给我|帮我)?\s*(?:\d+|[一二两三四五六七八九十]+)?\s*(?:个|斤|包|袋|盒|瓶|根|头|把|块|份|kg|克|克)?\s*/,
     ''
   );
-  return FRESH_INGREDIENT_NAMES.includes(stripped) ? stripped : null;
+  return canonicalIngredientName(stripped);
 }
 
 /**

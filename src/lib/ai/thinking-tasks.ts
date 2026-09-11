@@ -96,7 +96,7 @@ const FLOWS: Record<ThinkingScenario, ThinkingFlow> = {
     scenario: 'food_query',
     tasks: [
       { id: 'understand', label: '小青正在看看你的问题' },
-      { id: 'check_fridge', label: '小青正在翻找你的冰箱' },
+      { id: 'check_fridge', label: '小青正在翻一翻你的厨房' },
       { id: 'check_status', label: '小青正在查看食材状态' },
       { id: 'browse_recipes', label: '小青正在翻阅轻舍菜谱' },
       { id: 'compose', label: '小青正在整理可行方案' }

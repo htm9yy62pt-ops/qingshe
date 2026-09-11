@@ -178,7 +178,7 @@ export function ExecutionResultConfirm({
       <h3 className="text-lg font-bold text-gray-900">本次制作：{recommended.title}</h3>
 
       <div className="mt-4 bg-blue-50 rounded-lg p-3 text-sm text-blue-800">
-        请确认本次实际消耗的食材。已关联冰箱库存的食材会按你填写的数量更新。
+        请确认本次实际消耗的食材。已关联厨房库存的食材会按你填写的数量更新。
       </div>
 
       <div className="mt-4">
@@ -232,7 +232,7 @@ export function ExecutionResultConfirm({
       )}
 
       <div className="mt-5 text-sm font-medium text-gray-900">
-        确认以上消耗并更新冰箱？
+        确认以上消耗并更新厨房？
       </div>
 
       <div className="mt-4 flex flex-wrap gap-2">

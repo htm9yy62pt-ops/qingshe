@@ -9,7 +9,11 @@ import {
   INGREDIENT_ACTION_RESIDUE_RE,
   INVENTORY_RECORD_PREFIX_RE,
   INVENTORY_SUBJECT_RE,
-  LIST_DELIMITER_RE
+  KITCHEN_REGION_WORD_ALT,
+  kitchenLocationOf,
+  LIST_DELIMITER_RE,
+  RECORD_QUESTION_GUARD_RE,
+  type KitchenStorageLocation
 } from './tasks/task-router';
 import type { ShoppingListItem } from '@/lib/types/shopping-list';
 import type { InventoryIngredient } from '@/lib/types/ingredient';
@@ -55,6 +59,13 @@ const ITEM_QTY_SUFFIX_RE = new RegExp(`^(.+?)\\s*(\\d+|[一二两三四五六七
 
 /** 拆不出数量段的名单条目，名字里再出现这些字符就不是食材名，是整句残缺 */
 const LIST_ITEM_BAD_CHAR_RE = /[。；;！!？?、，,\d一二两三四五六七八九十半些]/;
+
+/**
+ * 否定/存在动词开头不是菜名：「有没有牛肉」剥掉一层「有」之后剩下「没有牛肉」，
+ * 光看字符它是干净的 —— 必须在这里拦住，否则整句会被当成两行库存写进去。
+ * 「无花果」这类真菜名用得起「无」，所以表里不收它。
+ */
+const LIST_ITEM_NEGATION_HEAD_RE = /^(?:没|不|有)/;
 
 function isoDaysAgo(days: number): string {
   const d = new Date();
@@ -106,12 +117,14 @@ export function tryParseInventoryRecord(
   }
 
   const name = rest.trim();
-  // 含并列标点说明这是名单，单条解析绝不吞下「牛肉、豌豆」当菜名 —— 那是批量函数的职责。
+  // 含并列标记说明这是名单，单条解析绝不吞下「牛肉、豌豆」「牛肉和豌豆」当菜名 ——
+  // 那是批量函数的职责，这里硬吞就等于把第二样东西从名字里抹掉。
   // 含动作残留（「今天买了牛肉记得放冰箱」）同理：那是半句话，不是名字。
   if (
     !name ||
     name.length > 12 ||
-    /[、，,；;]/.test(name) ||
+    LIST_DELIMITER_RE.test(name) ||
+    /[；;]/.test(name) ||
     VAGUE_INVENTORY_NAME_RE.test(name) ||
     INGREDIENT_ACTION_RESIDUE_RE.test(name)
   ) {
@@ -144,6 +157,7 @@ function parseListItem(raw: string): IngredientRecordData | null {
     !VAGUE_INVENTORY_NAME_RE.test(name) &&
     !LIST_ITEM_BAD_CHAR_RE.test(name) &&
     !INGREDIENT_ACTION_RESIDUE_RE.test(name) &&
+    !LIST_ITEM_NEGATION_HEAD_RE.test(name) &&
     !/了$/.test(name);
 
   /*
@@ -195,29 +209,116 @@ function parseIngredientList(chunk: string): IngredientRecordData[] | null {
   return items;
 }
 
+/* ════════════════════════════════════════════════════════════════════
+ * P1-2a 厨房资源 Parser：把「冰箱批量」扩成「按储存区域的厨房批量」
+ * ════════════════════════════════════════════════════════════════════ */
+
 /**
- * P0.5-1 批量冰箱录入：一句话、多项食材 → 多条确定性记录（零 LLM）。
+ * 用户说出口的储存区域（类型与区域词表都在共享识别层 `tasks/task-router`）：
+ * Router 用它认「橱柜里有…」这种陈述式录入，本文件用它按区域切句 ——
+ * 一份词典两处读，Parser 侧不再长出第二套区域词表。
  *
- * 接受三种句式来源（句式正则与 Router 同源，见 task-router）：
- * - 陈述：「我现在冰箱里有牛肉、豌豆，帮我加进冰箱」（claim 前缀 + 动作尾句）
- * - 购买名单：「今天我买了牛肉、豌豆和鸡蛋」（购买前缀 + 并列名单）
- * - 裸名单：「牛肉、豌豆、鸡蛋」
- *
- * 契约与单条版一致且更严：任一非空分句解析失败就整体返回 null，
- * 由调用方 fallback 到 LLM —— 宁可多问一句，绝不猜测。
- * 只解析出一项时要求句子里确有录入动作（「牛肉，放进冰箱」），
- * 否则交回单条链路，不从这里抢语义。
+ * 「未指定」不是一种位置，是没有位置：词表查不到、句子里没说，就留 undefined，
+ * 绝不拿「生鲜默认冷藏」替用户做主。
  */
-export function tryParseInventoryRecords(
-  message: string
-): IngredientRecordData[] | null {
+export type { KitchenStorageLocation };
+
+/**
+ * 一次区域声明 = 「(现在)(我的)位置词 (+里|中|室|下)」+「(现在|还|都)」+「(有|放了|装着|多了…)」。
+ * 状语两头都要放行：共享 claim 正则吃得下「我现在冰箱里有」，只把状语挂在位置词后面就漏掉这一种，
+ * 「我先」会被当成没有位置的前置名单，整串解析当场作废。
+ * 位置词必须紧咬存在动词才算声明：「常温牛奶」「冷冻水饺」里的位置字只是菜名的一部分。
+ */
+const KITCHEN_CLAIM_ADVERB = '(?:现在|目前|还|都|已经|又|新|就)?\\s*';
+const KITCHEN_REGION_CLAIM_SOURCE =
+  KITCHEN_CLAIM_ADVERB +
+  '(?:我们|我|咱们|咱|您|你)?\\s*(?:的)?\\s*' +
+  `(${KITCHEN_REGION_WORD_ALT})` +
+  '(?:里面|里|内|中|室|下)?\\s*' +
+  KITCHEN_CLAIM_ADVERB +
+  '(?:都|全)?\\s*' +
+  '(?:有|放了|放着|装着|装了|多了|新添了|添了|摆着)';
+
+/** 一个区域分片：这一截名单属于哪个储存位置（undefined = 用户没提位置） */
+interface KitchenRegionSlice {
+  location: KitchenStorageLocation | undefined;
+  text: string;
+}
+
+/**
+ * 「冰箱里有鸡蛋、鸭蛋，橱柜里有食盐、鸡精」—— 每个区域声明各领走自己那段名单，
+ * 区域自己的 storageLocation 跟着名单走，不串到下一段去。
+ * 首个声明之前的文本无可继承位置，location 为 undefined。
+ */
+function splitKitchenRegions(clause: string): KitchenRegionSlice[] {
+  const re = new RegExp(KITCHEN_REGION_CLAIM_SOURCE, 'g');
+  const marks: Array<{
+    start: number;
+    end: number;
+    location: KitchenStorageLocation | undefined;
+  }> = [];
+  for (let hit = re.exec(clause); hit !== null; hit = re.exec(clause)) {
+    if (hit.index === re.lastIndex) {
+      re.lastIndex += 1;
+      continue;
+    }
+    marks.push({ start: hit.index, end: re.lastIndex, location: kitchenLocationOf(hit[1]) });
+  }
+  if (marks.length === 0) return [{ location: undefined, text: clause }];
+
+  const slices: KitchenRegionSlice[] = [];
+  const head = clause.slice(0, marks[0].start).trim();
+  if (head) slices.push({ location: undefined, text: head });
+  marks.forEach((mark, i) => {
+    const to = i + 1 < marks.length ? marks[i + 1].start : clause.length;
+    slices.push({ location: mark.location, text: clause.slice(mark.end, to) });
+  });
+  return slices;
+}
+
+/**
+ * 纯存在句的句头（「我有…」「家里现在有…」「还有…」）。
+ * 只处理位置声明之外的语气，剥不动就原样交回下游 —— 这里不认「有」是食材名的一部分。
+ */
+const KITCHEN_HAVE_CLAIM_RE =
+  /^(?:现在|目前|还|都|已经|又|新)?(?:家里|家中|家)?有(?:了|着)?\s*/;
+
+/**
+ * 录入动作的纯修饰尾：共享尾句守卫的动词表吃得下「放进冰箱」，修饰表里却只有「全」没有「全部」，
+ * 「帮我全部放进冰箱」剥完动词只剩「，帮我全部」。这一截里没有任何食材，
+ * 在厨房 Parser 本地丢掉即可，不去动 Router 与单条解析共用的那张表。
+ */
+const KITCHEN_ACTION_MODIFIER_TAIL_RE =
+  /[，,、]?\s*(?:就|再|然后|顺便|顺手|马上|立刻)?\s*(?:帮|请|给)?\s*(?:我|你)?\s*(?:把|将)?\s*(?:这些|那些)?\s*(?:全部|都|一并|一起|统统)?\s*$/;
+
+/** 一截名单正文 + 它所属的储存位置（undefined = 用户没提位置） */
+interface KitchenSliceBody {
+  location: KitchenStorageLocation | undefined;
+  body: string;
+}
+
+/**
+ * 分句 → 剥动作尾句 → 按区域切分 → 剥声明与主语，产出「区域 + 名单正文」。
+ *
+ * 批量 Parser 与 `looksLikeParallelInventoryList` 共用这一条剥法：结构判定和
+ * 解析判定各写一遍，迟早漂移成两种口径 —— 一边认它是名单、另一边认不出，
+ * 半成品卡就从缝里漏出去。
+ * 返回 null = 这句根本不该进厨房批量（疑问句 / 空句）。
+ */
+function kitchenSliceBodies(message: string): {
+  bodies: KitchenSliceBody[];
+  sawActionClause: boolean;
+} | null {
+  // 查询保护：「我冰箱里有什么？」是在问现实，不是告诉现实（守卫与 Router 共用一份）
+  if (RECORD_QUESTION_GUARD_RE.test(message)) return null;
+
   const clauses = message
     .split(/[。；;！!\n]+/)
     .map((c) => c.trim())
     .filter(Boolean);
   if (clauses.length === 0) return null;
 
-  const items: IngredientRecordData[] = [];
+  const bodies: KitchenSliceBody[] = [];
   let sawActionClause = false;
 
   for (const raw of clauses) {
@@ -226,43 +327,113 @@ export function tryParseInventoryRecords(
     // 剥完还剩名单就继续解析。顺序反了会把「牛肉，放进冰箱」整句当动作丢掉。
     const noTail = clause.replace(FRIDGE_ACTION_TAIL_RE, '');
     if (noTail !== clause) sawActionClause = true;
-    const trimmed = noTail.trim();
+    // 尾句守卫只剥到动词为止，剩下的纯修饰（「，帮我全部」）不属于名单
+    const trimmed = (
+      noTail === clause ? noTail : noTail.replace(KITCHEN_ACTION_MODIFIER_TAIL_RE, '')
+    ).trim();
     if (!trimmed) {
       if (FRIDGE_ACTION_CLAUSE_RE.test(clause)) sawActionClause = true;
       continue;
     }
 
-    /*
-     * claim 前缀（「我现在冰箱里有…」）只是位置声明，剥掉之后剩下名单。
-     * 主语/把字头必须排在 claim 之后剥：先剥主语会把「我现在冰箱里有」削成
-     * 「现在冰箱里有」，位置声明不再成立，整串名单就散了。
-     */
-    const claim = trimmed.match(FRIDGE_CLAIM_RE);
-    const body = (
-      claim ? trimmed.slice(claim[0].length) : trimmed.replace(INVENTORY_SUBJECT_RE, '')
-    ).trim();
-    if (!body) continue;
+    for (const slice of splitKitchenRegions(trimmed)) {
+      /*
+       * 区域声明已在切分时剥掉，claim 前缀（「我现在冰箱里有…」）同样只是位置声明。
+       * 主语/把字头必须排在 claim 之后剥：先剥主语会把「我现在冰箱里有」削成
+       * 「现在冰箱里有」，位置声明不再成立，整串名单就散了。
+       */
+      const claim = slice.text.match(FRIDGE_CLAIM_RE);
+      const body = (
+        claim ? slice.text.slice(claim[0].length) : slice.text.replace(INVENTORY_SUBJECT_RE, '')
+      )
+        .replace(KITCHEN_HAVE_CLAIM_RE, '')
+        .trim();
+      if (body) bodies.push({ location: slice.location, body });
+    }
+  }
 
+  return { bodies, sawActionClause };
+}
+
+/**
+ * 厨房 Reality 批量录入：一句话、多区域、多项食材 → 多条确定性记录（零 LLM）。
+ *
+ * 接受四种句式来源（冰箱/购买/裸名单与 Router 同源，见 task-router）：
+ * - 陈述：「我现在冰箱里有牛肉、豌豆，帮我加进冰箱」（claim 前缀 + 动作尾句）
+ * - 购买名单：「今天我买了牛肉、豌豆和鸡蛋」（购买前缀 + 并列名单）
+ * - 裸名单：「牛肉、豌豆、鸡蛋」
+ * - 多区域：「我的冰箱里现在有鸡蛋、鸭蛋；橱柜里有食盐、鸡精」（区域分片 + 各自名单）
+ *
+ * 契约与单条版一致且更严：任一非空分片解析失败就**整批**返回 null，
+ * 一项都不留下。调用方拿到 null 之后也不许改用单条 / LLM 出口硬凑一张卡 ——
+ * 多项句的半成品比重新问一句更坏（见 `looksLikeParallelInventoryList`）。
+ * 只解析出一项时要求句子里确有录入动作（「牛肉，放进冰箱」），
+ * 否则交回单条链路，不从这里抢语义。
+ */
+export function tryParseKitchenInventoryRecords(
+  message: string
+): IngredientRecordData[] | null {
+  const parsed = kitchenSliceBodies(message);
+  if (!parsed) return null;
+
+  const items: IngredientRecordData[] = [];
+
+  for (const { location, body } of parsed.bodies) {
     const pfx = body.match(INVENTORY_RECORD_PREFIX_RE);
     const list = parseIngredientList(pfx ? body.slice(pfx[0].length) : body);
     if (list) {
       const purchaseDate = purchaseDateFromPrefix(pfx?.[0] ?? '');
-      items.push(...list.map((item) => ({ ...item, purchaseDate })));
+      items.push(
+        ...list.map((item) => ({ ...item, ...(location ? { location } : {}), purchaseDate }))
+      );
       continue;
     }
 
     const single = tryParseInventoryRecord(body);
     if (single) {
-      items.push(single);
+      items.push(location ? { ...single, location } : single);
       continue;
     }
+    // 任一非空分片解析失败 → **整批作废**，已经解析出来的条目一条都不留。
+    // 「牛肉、鸡蛋、认不出的东西」只回牛肉鸡蛋，等于谎报「你家冰箱里没有后两样」；
+    // 半张确认卡比重新问一句更坏 —— 数据完整性不是「能记多少记多少」。
     return null;
   }
 
   if (items.length >= 2) return items;
   // 「帮我放进一些牛肉，放进冰箱」：单项 + 动作分句也是完整的批量语境
-  if (items.length === 1 && sawActionClause) return items;
+  if (items.length === 1 && parsed.sawActionClause) return items;
   return null;
+}
+
+/**
+ * 这句话的结构本身就是「并列多料名单」：剥完区域声明 / 主语 / 购买前缀之后，
+ * 某一截里仍然并列着 ≥2 项。
+ *
+ * 存在的唯一理由是把降级路径钉死在事实完整性上：批量解析弃权时，调用方手上
+ * 只剩单条解析和 LLM 提取两个出口，而它们都**只回一项**。对一句列了三样东西的话
+ * 来说，那不是在降级，是在悄悄丢掉两样 —— 真人测试里「牛肉、鸡蛋、盐」只长出
+ * 一张「牛肉」确认卡，就是这条出口走出来的。多项句 + 批量失败必须拦住，
+ * 整批重新问一次，也不发半成品卡。
+ */
+export function looksLikeParallelInventoryList(message: string): boolean {
+  const parsed = kitchenSliceBodies(message);
+  if (!parsed) return false;
+  return parsed.bodies.some(({ body }) => {
+    const pfx = body.match(INVENTORY_RECORD_PREFIX_RE);
+    const rest = pfx ? body.slice(pfx[0].length) : body;
+    return rest.split(LIST_DELIMITER_RE).map((part) => part.trim()).filter(Boolean).length >= 2;
+  });
+}
+
+/**
+ * P0.5-1 起的兼容入口：chat route / onboarding / harness 都认这个名字。
+ * 冰箱是厨房的一个区域，不是两套解析器 —— 旧名直接转调厨房 Parser。
+ */
+export function tryParseInventoryRecords(
+  message: string
+): IngredientRecordData[] | null {
+  return tryParseKitchenInventoryRecords(message);
 }
 
 /**

@@ -20,14 +20,24 @@ import {
 } from '../src/lib/ai/tasks';
 import {
   routeAITask,
+  bareIngredientName,
   bareIngredientListNames,
+  canonicalIngredientName,
   FRESH_INGREDIENT_NAMES,
+  INGREDIENT_NAME_ALIASES,
   INGREDIENT_ACTION_RESIDUE_RE,
   FRIDGE_ACTION_TAIL_RE,
   isCookingCapabilityQuery,
   RECORD_QUESTION_GUARD_RE
 } from '../src/lib/ai/tasks/task-router';
-import { tryParseInventoryRecord, tryParseInventoryRecords, type IngredientRecordDraft } from '../src/lib/ai/record';
+import {
+  looksLikeParallelInventoryList,
+  tryParseInventoryRecord,
+  tryParseInventoryRecords,
+  tryParseKitchenInventoryRecords,
+  type IngredientRecordData,
+  type IngredientRecordDraft
+} from '../src/lib/ai/record';
 import { extractShoppingItems } from '../src/lib/ai/tasks/shopping-task';
 import type { IngredientCardAction } from '../src/lib/types/chat';
 import { isIngredientDraftDiscard } from '../src/lib/ai/confirmation';
@@ -1736,6 +1746,287 @@ for (const cc of ccQueryCases) {
     (intentService as any).classifyIntent = originalClassify;
     aiReplyStub = null;
     aiSystemPrompt = '';
+  }
+}
+
+/* ------------------------------------------------------------------
+ * KI 组：P1-2a「我的厨房」Reality 录入解析层（只测 Parser，零 LLM / 零 UI / 零新状态机）
+ *
+ * 一条铁律贯穿全部断言：storageLocation 只能来自用户自己说出口的区域词。
+ *   KI1  单区域 + 动作尾句      KI2  分号多区域长句（验收句）
+ *   KI3  数量单位随区域走        KI4  无位置声明 → 不猜
+ *   KI5  问句与「能做什么」不是录入
+ *   KI6  旧名 tryParseInventoryRecords 仍是同一套实现
+ *   KI7  菜名里的「冻 / 常温」不是区域声明
+ * ------------------------------------------------------------------ */
+
+/** 解析结果投影成「名称=区域」，区域缺省写成「未指定」—— 一眼看得出有没有替用户做主 */
+function kitchenLocations(items: IngredientRecordData[] | null): string[] | null {
+  return items?.map((item) => `${item.name}=${item.location ?? '未指定'}`) ?? null;
+}
+
+function kitchenParserCheck(label: string, message: string, expect: string[] | null) {
+  const got = kitchenLocations(tryParseKitchenInventoryRecords(message));
+  const pass = JSON.stringify(got) === JSON.stringify(expect);
+  summary.push({ label, pass, detail: JSON.stringify(got) });
+  realLog(`${pass ? 'PASS' : 'FAIL'}  ${label}`);
+  if (!pass) realLog(`      ${JSON.stringify(got)}`);
+}
+
+// 「我的(的)」「现在」「帮我全部放进冰箱」都是修饰，区域只有一个：冰箱 → 冷藏
+kitchenParserCheck(
+  'KI1 「我的冰箱里现在有鸡蛋、鸭蛋、牛奶、酸奶、西瓜，帮我全部放进冰箱」→ 5 行全冷藏',
+  '我的冰箱里现在有鸡蛋、鸭蛋、牛奶、酸奶、西瓜，帮我全部放进冰箱',
+  ['鸡蛋=冷藏', '鸭蛋=冷藏', '牛奶=冷藏', '酸奶=冷藏', '西瓜=冷藏']
+);
+
+// 验收句：两个区域各自领走自己的名单，14 行不串行
+kitchenParserCheck(
+  'KI2 验收句「冰箱里有…10 项；冷冻室里有…4 项。」→ 14 行按区域分组',
+  '冰箱里有冻熟猪肉、鸡胸肉、牛肉、羊肉、虾仁、扇贝、鲈鱼、桑葚、冻水饺、冻汤圆；冷冻室里有猪油、3罐可乐、2瓶矿泉水、20包大米。',
+  [
+    '冻熟猪肉=冷藏', '鸡胸肉=冷藏', '牛肉=冷藏', '羊肉=冷藏', '虾仁=冷藏',
+    '扇贝=冷藏', '鲈鱼=冷藏', '桑葚=冷藏', '冻水饺=冷藏', '冻汤圆=冷藏',
+    '猪油=冷冻', '可乐=冷冻', '矿泉水=冷冻', '大米=冷冻'
+  ]
+);
+
+// 数量/单位照旧：剥在名称前，不混进名字；且归属跟着所在区域，不跟整句
+{
+  const got = tryParseKitchenInventoryRecords(
+    '冷冻室里有猪油、3罐可乐、2瓶矿泉水、20包大米'
+  );
+  const rows = got?.map((i) => `${i.name}|${i.quantity}|${i.unit}|${i.location ?? '未指定'}`) ?? null;
+  const expect = ['猪油|1||冷冻', '可乐|3|罐|冷冻', '矿泉水|2|瓶|冷冻', '大米|20|包|冷冻'];
+  const pass = JSON.stringify(rows) === JSON.stringify(expect);
+  summary.push({ label: 'KI3 「3罐可乐 / 2瓶矿泉水 / 20包大米」名称剥量词、数量单位照旧', pass, detail: JSON.stringify(rows) });
+  realLog(`${pass ? 'PASS' : 'FAIL'}  KI3 数量单位 × 区域归属`);
+  if (!pass) realLog(`      got=${JSON.stringify(rows)} expect=${JSON.stringify(expect)}`);
+}
+
+// 没有位置就说没有位置：下游默认值另说，Parser 不许凭空写一个区域
+kitchenParserCheck(
+  'KI4a 「我有牛肉、鸡蛋、食盐」→ 3 行且 location 全部留空',
+  '我有牛肉、鸡蛋、食盐',
+  ['牛肉=未指定', '鸡蛋=未指定', '食盐=未指定']
+);
+kitchenParserCheck(
+  'KI4b 裸名单「牛肉、豌豆、鸡蛋」→ 3 行，无一行带区域',
+  '牛肉、豌豆、鸡蛋',
+  ['牛肉=未指定', '豌豆=未指定', '鸡蛋=未指定']
+);
+kitchenParserCheck(
+  'KI4c 「橱柜里有食盐、鸡精」→ 2 行全橱柜（不并回冷藏）',
+  '橱柜里有食盐、鸡精',
+  ['食盐=橱柜', '鸡精=橱柜']
+);
+
+// 查询保护：问现实 ≠ 告诉现实；「能做什么」走 REALITY_QUERY，不从厨房 Parser 出草稿
+{
+  const asked = tryParseKitchenInventoryRecords('我冰箱里有什么？');
+  const capability = tryParseKitchenInventoryRecords('我现在可以做什么了');
+  const pass =
+    asked === null &&
+    capability === null &&
+    RECORD_QUESTION_GUARD_RE.test('我冰箱里有什么') &&
+    isCookingCapabilityQuery('我现在可以做什么了');
+  summary.push({ label: 'KI5 「我冰箱里有什么？」「我现在可以做什么了」→ null（查询不是录入）', pass, detail: `${JSON.stringify(asked)} / ${JSON.stringify(capability)}` });
+  realLog(`${pass ? 'PASS' : 'FAIL'}  KI5 查询保护`);
+}
+
+// 兼容入口：旧名字必须还是同一套实现，不能长出第二个 Parser
+{
+  const sentence = '我的冰箱里现在有鸡蛋、鸭蛋；橱柜里有食盐、鸡精';
+  const legacy = kitchenLocations(tryParseInventoryRecords(sentence));
+  const current = kitchenLocations(tryParseKitchenInventoryRecords(sentence));
+  const pass =
+    JSON.stringify(legacy) === JSON.stringify(current) &&
+    JSON.stringify(current) ===
+      JSON.stringify(['鸡蛋=冷藏', '鸭蛋=冷藏', '食盐=橱柜', '鸡精=橱柜']);
+  summary.push({ label: 'KI6 旧名 tryParseInventoryRecords ≡ 厨房 Parser（分号两侧区域不串行）', pass, detail: JSON.stringify({ legacy, current }) });
+  realLog(`${pass ? 'PASS' : 'FAIL'}  KI6 旧名兼容`);
+  if (!pass) realLog(`      ${JSON.stringify({ legacy, current })}`);
+}
+
+// 反证：词表只认「位置词 + 存在动词」的成对形式，菜名里带位置字既咬不断名单，也不凭空长出一个区域
+kitchenParserCheck(
+  'KI7a 「我有常温牛奶、酸奶」→ 名称完整、区域全部留空（「常温」是名字的一部分）',
+  '我有常温牛奶、酸奶',
+  ['常温牛奶=未指定', '酸奶=未指定']
+);
+kitchenParserCheck(
+  'KI7b 「冷冻室里有冻水饺、冻汤圆」→ 2 行全冷冻（名字里的「冻」不各自开区域）',
+  '冷冻室里有冻水饺、冻汤圆',
+  ['冻水饺=冷冻', '冻汤圆=冷冻']
+);
+
+/* =====================================================================
+ * KI8-KI12：批量录入必须原子（真人浏览器测试打出来的两个洞）
+ *
+ * 现场是同一个根因的两种表现：deterministic Parser 认得这些句子，Router 的门
+ * 却只认「冰箱」，于是整句被扔给 LLM 猜意图 ——
+ * 「我橱柜里有食盐和食用油」第一次被判成 LIFE_SOLUTION；
+ * 「牛肉、鸡蛋、盐」进了 REALITY_RECORD 后只提取出「牛肉」。
+ * 后一条更危险：它不是猜错，是**悄悄丢数据** —— 三项事实进、一张卡出。
+ * 于是这里同时钉三层：Parser 任一项目前失败整批 null；Router 必须把句子送进
+ * deterministic 通道；route 出口在批量失败时禁止降级成单条卡（连 LLM 提取都不许调）。
+ * ===================================================================== */
+
+// 别名归一表自身的完整性：别名指向的名字必须已经在生鲜词表里，
+// 否则「盐」会被认成一个词表外的名字，比不认还糟。
+{
+  const aliasTargetsRegistered = Object.values(INGREDIENT_NAME_ALIASES).every((target) =>
+    FRESH_INGREDIENT_NAMES.includes(target)
+  );
+  const pass =
+    canonicalIngredientName('盐') === '食盐' &&
+    canonicalIngredientName('油') === '食用油' &&
+    canonicalIngredientName('白糖') === null &&
+    bareIngredientName('盐') === '食盐' &&
+    bareIngredientName('2个盐') === '食盐' &&
+    bareIngredientName('食用油') === '食用油' &&
+    aliasTargetsRegistered &&
+    // 别名本身不许混进词表：RB15 逐条断言 tryParseInventoryRecord(词).name === 词
+    !FRESH_INGREDIENT_NAMES.includes('盐') &&
+    !FRESH_INGREDIENT_NAMES.includes('油');
+  summary.push({
+    label: 'KI8-alias 「盐」→「食盐」、「油」→「食用油」，别名目标都在词表内',
+    pass,
+    detail: `盐=${canonicalIngredientName('盐')} 油=${canonicalIngredientName('油')} 2个盐=${bareIngredientName('2个盐')}`
+  });
+  realLog(`   ${pass ? 'PASS' : 'FAIL'} KI8-alias 别名归一（食盐 / 食用油）`);
+}
+
+kitchenParserCheck(
+  'KI8 「我橱柜里有食盐和食用油」→ 2 行全在、都归橱柜（deterministic 命中，不经 LLM）',
+  '我橱柜里有食盐和食用油',
+  ['食盐=橱柜', '食用油=橱柜']
+);
+kitchenParserCheck(
+  'KI9 「我橱柜里有盐和食用油」→ 2 行、口语「盐」canonical 成「食盐」',
+  '我橱柜里有盐和食用油',
+  ['食盐=橱柜', '食用油=橱柜']
+);
+kitchenParserCheck(
+  'KI10 「牛肉、鸡蛋、盐」→ 3 行全在（牛肉 / 鸡蛋 / 食盐）、位置一律未指定',
+  '牛肉、鸡蛋、盐',
+  ['牛肉=未指定', '鸡蛋=未指定', '食盐=未指定']
+);
+
+// 整批作废：认不出那一项时，前两项一条都不许留下。
+{
+  const broken = '牛肉、鸡蛋、完全无法识别的测试词';
+  const rows = tryParseKitchenInventoryRecords(broken);
+  const pass =
+    rows === null &&
+    // 结构判定必须认得这是并列名单 —— route 层靠它封死降级出口
+    looksLikeParallelInventoryList(broken) === true &&
+    // 单项句不算并列名单：不许把「今天买了牛肉」这种正常单条录入一起拦掉
+    looksLikeParallelInventoryList('今天买了牛肉') === false &&
+    // 单条出口自己也必须拒绝并列结构（不吞「牛肉和豌豆」这种两项句）
+    tryParseInventoryRecord('今天买了牛肉和豌豆') === null;
+  summary.push({ label: 'KI11 任一项认不出 → 整批 null（不吃部分结果）', pass, detail: `rows=${kitchenLocations(rows)}` });
+  realLog(`   ${pass ? 'PASS' : 'FAIL'} KI11 批量原子性（失败项不许被过滤掉）`);
+}
+
+/* 三层里的第二层：Router 必须把真人原句送进 deterministic 录入通道。
+ * 门只认「冰箱」的时候，橱柜句整句被扔给 LLM 猜意图 —— 第一次判成 LIFE_SOLUTION
+ * 就是这么来的。这里断言的是 taskType，不碰 route 的 LLM 分支。 */
+{
+  const routed = [
+    '我橱柜里有食盐和食用油',
+    '我橱柜里有盐和食用油',
+    '牛肉、鸡蛋、盐'
+  ].map((msg) => routeAITask({ message: msg, ingredients: [], consumables: [] }).intent?.taskType);
+  const pass = routed.every((taskType) => taskType === 'add_inventory');
+  summary.push({
+    label: 'KI8/KI9/KI10-router 橱柜句 + 裸名单进 deterministic 录入通道（不掉给 LLM 猜意图）',
+    pass,
+    detail: JSON.stringify(routed)
+  });
+  realLog(`${pass ? 'PASS' : 'FAIL'}  KI8/KI9/KI10-router deterministic 录入通道`);
+  if (!pass) realLog(`      ${JSON.stringify(routed)}`);
+}
+
+/** route 级批量卡的「名称=区域」投影（IngredientRecordData.location 才是解析字段名） */
+const ingredientRows = (json: any): string =>
+  ((json?.drafts ?? []) as IngredientRecordDraft[])
+    .map((d) => `${d.data.name}=${d.data.location ?? '未指定'}`)
+    .join(',');
+
+// route 级：真人输入原句 → 2 行草稿、零 LLM 调用（连 classifier 都不进）
+await chat(
+  'KI8-api 「我橱柜里有食盐和食用油」→ route 级 2 行（食盐=橱柜,食用油=橱柜），零 LLM',
+  uiBody('我橱柜里有食盐和食用油', null),
+  (g) =>
+    g.decision === 'add-inventory' &&
+    g.aiCalls === 0 &&
+    g.llmExtractCalls === 0 &&
+    ingredientRows(g.json) === '食盐=橱柜,食用油=橱柜'
+);
+
+// route 级：真人输入口语「盐」→ canonical 成「食盐」入库草稿，不另开一条「盐」
+await chat(
+  'KI9-api 「我橱柜里有盐和食用油」→ 2 行、第 1 行名字是「食盐」',
+  uiBody('我橱柜里有盐和食用油', null),
+  (g) =>
+    g.decision === 'add-inventory' &&
+    g.llmExtractCalls === 0 &&
+    ingredientRows(g.json) === '食盐=橱柜,食用油=橱柜'
+);
+
+// route 级：三项全出卡，且不经 LLM 提取 —— 「只提取出牛肉」那条降级路被封死
+await chat(
+  'KI10-api 「牛肉、鸡蛋、盐」→ route 级 3 行（牛肉,鸡蛋,食盐）全 confirming',
+  uiBody('牛肉、鸡蛋、盐', null),
+  (g) => {
+    const drafts = (g.json.drafts ?? []) as IngredientRecordDraft[];
+    return (
+      g.decision === 'add-inventory' &&
+      g.llmExtractCalls === 0 &&
+      drafts.map((d) => d.data.name).join(',') === '牛肉,鸡蛋,食盐' &&
+      drafts.every((d) => d.status === 'confirming' && d.data.location === undefined)
+    );
+  }
+);
+
+// route 级 atomic failure（录入通道内）：批量弃权 → 不出卡、不调 LLM 提取、不写 Reality
+await chat(
+  'KI11-api 购买句里混进认不出的一项 → 整批重问，0 张半成品卡',
+  uiBody('我今天买了牛肉、鸡蛋和完全无法识别的测试词', null),
+  (g) =>
+    g.decision === 'add-inventory' &&
+    g.llmExtractCalls === 0 &&
+    (g.json.drafts ?? []).length === 0 &&
+    (g.json.draft ?? null) === null &&
+    /先不记一半|一件一件/.test(g.response)
+);
+
+/*
+ * route 级 atomic failure（classifier 通道）：Router 说 chat、classifyIntent 猜成
+ * REALITY_RECORD 时，闸门同样必须拦住 —— 上面那条闸门装在 REALITY_RECORD 的
+ * 唯一出口上，就是为了这一条路。classifier 打桩成「一定要记」，
+ * 只桩这一次，其余链路（Parser / 闸门 / 草稿构建）全走真实代码。
+ */
+{
+  const originalClassify = (intentService as any).classifyIntent;
+  (intentService as any).classifyIntent = async () => ({
+    intent: 'REALITY_RECORD',
+    requiredData: ['ingredients']
+  });
+  try {
+    await chat(
+      'KI12-api classifier 判成 REALITY_RECORD 时也不许吃部分结果（0 草稿 / 0 提取）',
+      uiBody('牛肉、鸡蛋、完全无法识别的测试词', null),
+      (g) =>
+        g.json.intent === 'REALITY_RECORD' &&
+        g.llmExtractCalls === 0 &&
+        (g.json.drafts ?? []).length === 0 &&
+        (g.json.draft ?? null) === null &&
+        /先不记一半|一件一件/.test(g.response)
+    );
+  } finally {
+    (intentService as any).classifyIntent = originalClassify;
   }
 }
 

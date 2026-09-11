@@ -23,7 +23,9 @@ export default function AddIngredientModal({ isOpen, onClose, onAddIngredient }:
   });
 
   const categories = ['蔬菜', '肉类', '水果', '奶制品', '主食', '调味品', '饮料', '其他'];
-  const storageLocations = ['冷藏', '冷冻', '常温'];
+  // 与 Parser 认的储存区域同一套口径：厨房不只是冰箱，橱柜和其他位置也要填得出来。
+  // 默认值仍是冷藏，本轮不动数据层兜底。
+  const storageLocations = ['冷藏', '冷冻', '橱柜', '常温', '其他'];
 
   const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
     const { name, value } = e.target;

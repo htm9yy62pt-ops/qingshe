@@ -3,7 +3,7 @@ import { classifyIntent } from '@/lib/ai/intent';
 import type { QingsheIntent, RealityDataType } from '@/lib/ai/intent';
 import { loadRealityContext } from '@/lib/ai/reality-context';
 import type { RealityContext } from '@/lib/ai/reality-context';
-import { extractIngredientRecord, buildIngredientDraft, tryParseInventoryRecord, tryParseInventoryRecords, shoppingItemToRestockDraft } from '@/lib/ai/record';
+import { extractIngredientRecord, buildIngredientDraft, tryParseInventoryRecord, tryParseInventoryRecords, looksLikeParallelInventoryList, shoppingItemToRestockDraft } from '@/lib/ai/record';
 import type { IngredientRecordDraft, IngredientRecordData } from '@/lib/ai/record';
 import { parseConfirmation, isIngredientDraftDiscard, readCardCommand } from '@/lib/ai/confirmation';
 import { chatWithAI } from '@/lib/ai/service';
@@ -423,7 +423,24 @@ export async function POST(req: NextRequest) {
       
       // 如果 Intent 是 REALITY_RECORD，进行食材记录提取
       if (intent === 'REALITY_RECORD') {
-        if (deterministicInventoryBatch) {
+        /*
+         * 批量原子性闸门只装在这一个出口上：不论 REALITY_RECORD 是 Router 给的还是
+         * classifyIntent 猜的，只要「句子结构是并列多料名单」而确定性批量 Parser 弃权了，
+         * 剩下的两个出口（单条解析、LLM 提取）都只能回**一项** —— 对一句列了三样东西的话
+         * 来说那不是降级，是悄悄丢掉两样（真人测试里「牛肉、鸡蛋、盐」只长出一张「牛肉」
+         * 确认卡，就是这么来的）。整批重新问一次，也不发半成品卡。
+         */
+        const inventoryListIncomplete =
+          !deterministicInventoryBatch &&
+          !deterministicInventory &&
+          looksLikeParallelInventoryList(message);
+        if (inventoryListIncomplete) {
+          // 并列名单里有一样认不出 → 整批作废，只回一句重问。
+          // 这里不出 draft / draftList：Reality 只在用户确认后才写，半成品卡一旦生成，
+          // 用户点「入库」就会把「牛肉、鸡蛋、盐」记成「牛肉」，丢掉的不是草稿是事实。
+          responseMessage =
+            '这句里并列了好几样，我没能全部认出来，先不记一半。你可以一件一件说，或者说清楚一点。';
+        } else if (deterministicInventoryBatch) {
           draftList = deterministicInventoryBatch.map((item) => buildIngredientDraft(item));
           responseMessage = `好的，一共 ${draftList.length} 样食材，我列成一张卡。逐行确认，或者整组入库。`;
         } else {
@@ -813,7 +830,7 @@ function ingredientRecord(data: IngredientRecordData): Record<string, unknown> {
 
 function ingredientSavePayload(data: IngredientRecordData): ChatApiResponse {
   return {
-    response: '已确认，已帮你加入冰箱。',
+    response: '已确认，已帮你加入厨房。',
     intent: 'REALITY_RECORD',
     requiredData: [],
     action: 'SAVE_INGREDIENT',
@@ -845,7 +862,7 @@ function ingredientBatchSavePayload(
     };
   }
   return {
-    response: `已确认，${drafts.length} 样食材都进冰箱了。`,
+    response: `已确认，${drafts.length} 项食材都进厨房了。`,
     intent: 'REALITY_RECORD',
     requiredData: [],
     action: 'SAVE_INGREDIENTS',

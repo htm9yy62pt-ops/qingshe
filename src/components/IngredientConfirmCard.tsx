@@ -31,7 +31,7 @@ export function IngredientConfirmCard({
   if (draft) {
     return (
       <div className="mt-3 rounded-lg border border-emerald-100 bg-emerald-50 p-3">
-        <div className="text-xs font-medium text-emerald-900">加入冰箱</div>
+        <div className="text-xs font-medium text-emerald-900">加入厨房</div>
         <IngredientFacts data={draft.data} />
         <div className="mt-2 flex gap-2">
           <button
@@ -59,7 +59,7 @@ export function IngredientConfirmCard({
   return (
     <div className="mt-3 rounded-lg border border-emerald-100 bg-emerald-50 p-3">
       <div className="text-xs font-medium text-emerald-900">
-        加入冰箱 · {rows.length} 样
+        加入厨房 · {rows.length} 项
       </div>
       <div className="mt-1 divide-y divide-emerald-100">
         {rows.map((row, index) => (
@@ -113,12 +113,12 @@ function IngredientFacts({
       }
     >
       <span>{data.name}</span>
-      {data.quantity ? (
-        <span>
-          {data.quantity}
-          {data.unit || '份'}
-        </span>
-      ) : null}
+      {/* 储存位置只回显用户说出口的区域，没说就是「未指定」。
+          落库时 Reality 层仍会兜底一个默认位置，那是下一阶段的口径，卡片不替它圆场。 */}
+      <span className={data.location ? undefined : 'text-emerald-600'}>
+        {data.quantity ? `${data.quantity}${data.unit || '份'} · ` : ''}
+        {data.location ?? '未指定'}
+      </span>
       {data.purchaseDate ? <span>{data.purchaseDate} 购入</span> : null}
       {data.expiryDate ? (
         <span>{data.expiryDate} 到期</span>
