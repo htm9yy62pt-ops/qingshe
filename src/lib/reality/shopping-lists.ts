@@ -321,6 +321,60 @@ export function markShoppingItemRestocked(
   return saveShoppingLists(nextLists);
 }
 
+export interface RestockTarget {
+  listId: string;
+  itemId: string;
+}
+
+/**
+ * P1-3 批量回程：一次确认把多条 item 标记为已购买 + 已入库。
+ *
+ * 是「勾选购买（toggle）+ 落锚点（markShoppingItemRestocked）」的合并批量形态，
+ * 覆盖同一条链路，不是第二套状态机：
+ * - status 只做 pending → purchased 的确认方向，不反向；
+ * - restockedAt 保留首锚（已有值不覆盖），幂等语义与单件版一致；
+ * - 每个受影响 list 单独重算 completedAt，与 toggle/cancel 的口径相同；
+ * - 全程只落一次盘。
+ */
+export function markShoppingItemsRestocked(
+  lists: ShoppingList[],
+  targets: RestockTarget[]
+): ShoppingList[] {
+  if (targets.length === 0) return lists;
+  const now = new Date().toISOString();
+  const targetIds = new Set(targets.map((t) => `${t.listId}:${t.itemId}`));
+
+  const nextLists = lists.map((list) => {
+    const touched = list.items.some((item) =>
+      targetIds.has(`${list.id}:${item.id}`)
+    );
+    if (!touched) return list;
+
+    const nextItems = list.items.map((item) =>
+      targetIds.has(`${list.id}:${item.id}`)
+        ? {
+            ...item,
+            status: item.status === 'cancelled' ? item.status : ('purchased' as const),
+            restockedAt: item.restockedAt ?? now
+          }
+        : item
+    );
+
+    const allFinal = nextItems.every(
+      (item) => item.status === 'purchased' || item.status === 'cancelled'
+    );
+
+    return {
+      ...list,
+      items: nextItems,
+      completedAt: allFinal ? list.completedAt ?? now : undefined,
+      updatedAt: now
+    };
+  });
+
+  return saveShoppingLists(nextLists);
+}
+
 /**
  * 按 listId 重新计算 list 的最终状态（用于 addItemsToShoppingList 之后）。
  * 暴露为工具函数，主要给未来 dashboard 用。

@@ -9,7 +9,7 @@ import {
   cancelShoppingItem,
   removeShoppingItem,
   addItemsToShoppingList,
-  markShoppingItemRestocked
+  markShoppingItemsRestocked
 } from '@/lib/reality/shopping-lists';
 import { loadIngredients, saveIngredients } from '@/lib/reality/ingredients';
 import {
@@ -38,14 +38,14 @@ export default function ShoppingListPage() {
   const [lifeResources, setLifeResources] = useState<LifeResource[]>([]);
   const [showAddForm, setShowAddForm] = useState(false);
   /**
-   * P0-B 回程：勾选「已购买」后待确认的入库卡（单槽位）。
-   * 卡片属于本页的当前任务，不进聊天消息流；确认前不写 qingshe_ingredients。
+   * P1-3 批量回程：pending 物品的勾选是「已买回来」候选选择（本地态，不动 status）。
+   * 一次确认产一张批量卡；确认前不写 qingshe_ingredients，也不改清单状态。
    */
-  const [restockCard, setRestockCard] = useState<{
-    listId: string;
-    itemId: string;
-    draft: IngredientRecordDraft;
-  } | null>(null);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  /** 待确认入库卡（批量槽位）。行由宿主移除，确认动作整组走同一条 SAVE 链路。 */
+  const [restockCard, setRestockCard] = useState<
+    { listId: string; itemId: string; draft: IngredientRecordDraft }[] | null
+  >(null);
 
   useEffect(() => {
     setLists(getShoppingLists());
@@ -60,42 +60,83 @@ export default function ShoppingListPage() {
     list.items.every((item) => item.status === 'purchased' || item.status === 'cancelled')
   );
 
-  const handleToggle = (listId: string, itemId: string) => {
-    const target = lists
-      .find((l) => l.id === listId)
-      ?.items.find((i) => i.id === itemId);
-    setLists((prev) => toggleShoppingItem(prev, listId, itemId));
-    if (!target) return;
+  /**
+   * 勾选框语义：
+   * - pending：切换「已买回来」候选选择，不改任何存储状态；
+   * - purchased：撤销本次购买（原 toggle 可逆语义保留）；
+   * - cancelled：不可勾（isDone 渲染，无回程）。
+   */
+  const handleItemCheck = (list: ShoppingList, item: ShoppingListItem) => {
+    if (item.status === 'pending') {
+      setSelectedIds((prev) => {
+        const next = new Set(prev);
+        if (next.has(item.id)) next.delete(item.id);
+        else next.add(item.id);
+        return next;
+      });
+      return;
+    }
+    if (item.status === 'purchased') {
+      setLists((prev) => toggleShoppingItem(prev, list.id, item.id));
+    }
+  };
 
-    if (target.status === 'pending') {
-      // 勾上 = 已购买：只产入库确认草稿，写不写库存由用户在卡片上决定。
-      // restockedAt 有值的 item 在这里被 shoppingItemToRestockDraft 拦下（幂等）。
-      const draft = shoppingItemToRestockDraft({ ...target, status: 'purchased' });
-      if (draft) setRestockCard({ listId, itemId, draft });
-    } else {
-      // 取消勾选：撤回的是这次购买动作，对应的未处理入库卡一并收回。
-      setRestockCard((cur) => (cur && cur.itemId === itemId ? null : cur));
+  /**
+   * 「已买回来（N）」：把选中的 pending 物品折成一张批量确认卡。
+   * 草稿仍走 shoppingItemToRestockDraft 单件函数（幂等锚点 restockedAt 原样生效），
+   * 批量只是卡片的形状，不是第二套回程。
+   */
+  const openRestockCard = () => {
+    const queued = new Set(
+      (restockCard ?? []).map((e) => `${e.listId}:${e.itemId}`)
+    );
+    const nextEntries = lists.flatMap((list) =>
+      list.items.flatMap((item) => {
+        if (!selectedIds.has(item.id)) return [];
+        if (queued.has(`${list.id}:${item.id}`)) return [];
+        const draft = shoppingItemToRestockDraft({ ...item, status: 'purchased' });
+        return draft ? [{ listId: list.id, itemId: item.id, draft }] : [];
+      })
+    );
+    setSelectedIds(new Set());
+    if (nextEntries.length > 0) {
+      setRestockCard([...(restockCard ?? []), ...nextEntries]);
     }
   };
 
   /**
    * 入库卡按钮。command 词汇与 IngredientCardAction 同源（confirm | cancel）。
    *
-   * - confirm：saveIngredients 写真实库存 + markShoppingItemRestocked 落幂等标记，
-   *   然后收卡。这是本页唯一的库存写入口。
-   * - cancel：纯本地收卡，不写库存也不打标记 —— 取消可能是误点，
-   *   重新勾选（pending → purchased）还能再出卡。
+   * - confirm：整组一次 saveIngredients 写真实库存 + markShoppingItemsRestocked
+   *   批量落 purchased + restockedAt 锚点，然后收卡。这是本页唯一的库存写入口。
+   * - cancel：纯本地收卡，不写库存也不打标记，物品保持 pending，可再次选择。
    */
   const handleRestockCardClick = (command: IngredientCardAction['command']) => {
-    if (!restockCard) return;
+    if (!restockCard?.length) return;
     if (command === 'cancel') {
       setRestockCard(null);
       return;
     }
-    const { listId, itemId, draft } = restockCard;
-    saveIngredients([...loadIngredients(), inventoryIngredientFromRestockDraft(draft)]);
-    setLists((prev) => markShoppingItemRestocked(prev, listId, itemId));
+    saveIngredients([
+      ...loadIngredients(),
+      ...restockCard.map((e) => inventoryIngredientFromRestockDraft(e.draft))
+    ]);
+    setLists((prev) =>
+      markShoppingItemsRestocked(
+        prev,
+        restockCard.map(({ listId, itemId }) => ({ listId, itemId }))
+      )
+    );
     setRestockCard(null);
+  };
+
+  /** 批量卡上的单行「移除」：把该行请出卡，不碰库存也不改清单状态。 */
+  const handleRestockRowRemove = (index: number) => {
+    setRestockCard((cur) => {
+      if (!cur) return cur;
+      const next = cur.filter((_, i) => i !== index);
+      return next.length > 0 ? next : null;
+    });
   };
 
   const handleCancel = (listId: string, itemId: string) => {
@@ -140,6 +181,7 @@ export default function ShoppingListPage() {
       manual: '手动',
       ai: 'AI'
     }[resolveItemSource(item)];
+    const selectable = item.status === 'pending';
 
     return (
       <li
@@ -149,8 +191,9 @@ export default function ShoppingListPage() {
         <label className="flex items-center gap-3 flex-1 cursor-pointer">
           <input
             type="checkbox"
-            checked={item.status === 'purchased'}
-            onChange={() => handleToggle(list.id, item.id)}
+            checked={item.status === 'purchased' || selectedIds.has(item.id)}
+            disabled={item.status === 'cancelled'}
+            onChange={() => handleItemCheck(list, item)}
             className="w-5 h-5 rounded border-gray-300 text-green-500 focus:ring-green-200"
           />
           <div className="flex flex-col">
@@ -319,15 +362,16 @@ export default function ShoppingListPage() {
             </div>
           ) : (
             <div className="space-y-6">
-              {restockCard && (
+              {restockCard && restockCard.length > 0 && (
                 <div>
                   <p className="text-xs text-gray-500">
-                    已购买的物品要放进冰箱吗？确认后才会写入库存。
+                    买回来的物品要放进厨房吗？确认后一次性写入库存。
                   </p>
                   <IngredientConfirmCard
-                    draft={restockCard.draft}
+                    drafts={restockCard.map((e) => e.draft)}
                     onConfirm={() => handleRestockCardClick('confirm')}
                     onCancel={() => handleRestockCardClick('cancel')}
+                    onRemove={handleRestockRowRemove}
                   />
                 </div>
               )}
@@ -348,6 +392,27 @@ export default function ShoppingListPage() {
           )}
         </div>
       </main>
+
+      {selectedIds.size > 0 && (
+        <div className="fixed bottom-0 inset-x-0 border-t border-gray-200 bg-white/95 backdrop-blur">
+          <div className="max-w-md mx-auto px-4 py-3 flex items-center gap-3">
+            <button
+              type="button"
+              onClick={openRestockCard}
+              className="flex-1 px-3 py-2 bg-green-600 text-white text-sm rounded-md hover:bg-green-700"
+            >
+              已买回来（{selectedIds.size}）
+            </button>
+            <button
+              type="button"
+              onClick={() => setSelectedIds(new Set())}
+              className="px-3 py-2 text-sm text-gray-500 hover:text-gray-700"
+            >
+              取消选择
+            </button>
+          </div>
+        </div>
+      )}
 
       <ShoppingItemFormModal
         open={showAddForm}

@@ -53,6 +53,7 @@ import {
   saveShoppingLists,
   toggleShoppingItem,
   markShoppingItemRestocked,
+  markShoppingItemsRestocked,
   createShoppingListFromRecipe,
   addShoppingList,
   resolveItemSource
@@ -588,6 +589,132 @@ async function main() {
       bRecipeDraft.type === bAiDraft.type &&
       resolveItemSource(bChiliPurchased) === 'recipe',
     JSON.stringify({ bRecipeDraft, bAiDraft })
+  );
+
+  /* ---------- P1-3 批量回程：一次确认 → 批量标记已购 + 已入库 ---------- */
+
+  resetStorage();
+  const mRes = addItemsToShoppingList(getShoppingLists(), {
+    items: [
+      { name: '鸡蛋', quantity: 10, unit: '个' },
+      { name: '青菜' },
+      { name: '牛肉', quantity: '500g' }
+    ],
+    source: 'ai'
+  });
+  const mRecipeList = addShoppingList(
+    getShoppingLists(),
+    createShoppingListFromRecipe({
+      id: 'list_recipe_m',
+      title: '凉拌香菜',
+      recipeId: 'recipe_m',
+      missingNames: ['香菜']
+    })
+  );
+  const mList = mRes.lists.find((l) => l.id === mRes.shoppingList.id)!;
+  const mEgg = mList.items.find((i) => i.name === '鸡蛋')!;
+  const mVeg = mList.items.find((i) => i.name === '青菜')!;
+  const mBeef = mList.items.find((i) => i.name === '牛肉')!;
+  const mCilantro = mRecipeList
+    .find((l) => l.id === 'list_recipe_m')!
+    .items[0];
+  const mBefore = JSON.stringify(fakeLocalStorage._dump());
+
+  // M1 批量标记：pending → purchased + restockedAt；清单未全完成则 completedAt 不落
+  const mTargets = [
+    { listId: mList.id, itemId: mEgg.id },
+    { listId: mList.id, itemId: mVeg.id },
+    { listId: 'list_recipe_m', itemId: mCilantro.id }
+  ];
+  const mMarked = markShoppingItemsRestocked(getShoppingLists(), mTargets);
+  const mMarkedList = mMarked.find((l) => l.id === mList.id)!;
+  const mMarkedRecipe = mMarked.find((l) => l.id === 'list_recipe_m')!;
+  const mEggAfter = mMarkedList.items.find((i) => i.id === mEgg.id)!;
+  const mCilantroAfter = mMarkedRecipe.items.find((i) => i.id === mCilantro.id)!;
+  check(
+    'M1 批量标记：跨清单 targets 全部落 purchased + restockedAt；部分完成清单 completedAt 仍为空，全部完成清单落 completedAt',
+    mEggAfter.status === 'purchased' &&
+      !!mEggAfter.restockedAt &&
+      mCilantroAfter.status === 'purchased' &&
+      !!mCilantroAfter.restockedAt &&
+      mMarkedList.completedAt === undefined &&
+      !!mMarkedRecipe.completedAt,
+    JSON.stringify({
+      egg: mEggAfter,
+      cilantro: mCilantroAfter,
+      aiCompletedAt: mMarkedList.completedAt,
+      recipeCompletedAt: mMarkedRecipe.completedAt
+    })
+  );
+
+  // M2 幂等：重复批量标记保留首锚 restockedAt，不产生新时间戳
+  const mEggAnchor = mEggAfter.restockedAt;
+  const mMarkedAgain = markShoppingItemsRestocked(getShoppingLists(), mTargets);
+  const mEggAgain = mMarkedAgain
+    .find((l) => l.id === mList.id)!
+    .items.find((i) => i.id === mEgg.id)!;
+  check(
+    'M2 重复批量标记幂等：restockedAt 保留首锚，status 不回退',
+    mEggAgain.restockedAt === mEggAnchor && mEggAgain.status === 'purchased',
+    JSON.stringify({ first: mEggAnchor, second: mEggAgain.restockedAt })
+  );
+
+  // M3 批量草稿仍走单件函数：剩余 pending 物品可继续选择；已入库物品被锚点拦下
+  const mBeefDraft = shoppingItemToRestockDraft({ ...mBeef, status: 'purchased' });
+  const mEggRedraft = shoppingItemToRestockDraft(mEggAgain);
+  check(
+    'M3 剩余 pending 可再出草稿（牛肉 500g → 500 + g），已入库鸡蛋永不再出卡',
+    !!mBeefDraft &&
+      mBeefDraft.data.name === '牛肉' &&
+      mBeefDraft.data.quantity === 500 &&
+      mBeefDraft.data.unit === 'g' &&
+      mEggRedraft === null,
+    JSON.stringify({ beef: mBeefDraft, eggRedraft: mEggRedraft })
+  );
+
+  // M4 整组确认端到端（页面动作序列）：选 2 条 → 批量草稿 → 一次 saveIngredients → 批量标记
+  resetStorage();
+  const fRes = addItemsToShoppingList(getShoppingLists(), {
+    items: [{ name: '酸奶', quantity: 2, unit: '盒' }, { name: '生菜' }],
+    source: 'manual'
+  });
+  const fList = fRes.lists.find((l) => l.id === fRes.shoppingList.id)!;
+  const fYogurt = fList.items.find((i) => i.name === '酸奶')!;
+  const fLettuce = fList.items.find((i) => i.name === '生菜')!;
+  const fEntries = [fYogurt, fLettuce].flatMap((item) => {
+    const draft = shoppingItemToRestockDraft({ ...item, status: 'purchased' });
+    return draft ? [{ listId: fList.id, itemId: item.id, draft }] : [];
+  });
+  saveIngredients([
+    ...loadIngredients(),
+    ...fEntries.map((e) => inventoryIngredientFromRestockDraft(e.draft))
+  ]);
+  const fMarked = markShoppingItemsRestocked(
+    getShoppingLists(),
+    fEntries.map(({ listId, itemId }) => ({ listId, itemId }))
+  );
+  const fStored = loadIngredients();
+  const fRow = fMarked.find((l) => l.id === fList.id)!;
+  check(
+    'M4 整组确认：一次写 2 条进库存（酸奶 2盒 / 生菜缺则留空），两条 item 同时落 purchased+restockedAt，清单 completedAt 落地',
+    fStored.length === 2 &&
+      fStored.some(
+        (i) => i.name === '酸奶' && i.quantity === '2' && i.unit === '盒'
+      ) &&
+      fStored.some(
+        (i) => i.name === '生菜' && i.quantity === '' && i.storageLocation === ''
+      ) &&
+      fRow.items.every((i) => i.status === 'purchased' && !!i.restockedAt) &&
+      !!fRow.completedAt,
+    JSON.stringify({
+      stored: fStored,
+      items: fRow.items.map((i) => ({
+        name: i.name,
+        status: i.status,
+        restockedAt: i.restockedAt
+      })),
+      completedAt: fRow.completedAt
+    })
   );
 
   /* ---------- R1：制作消耗不越界、不被旧快照覆盖 ---------- */
