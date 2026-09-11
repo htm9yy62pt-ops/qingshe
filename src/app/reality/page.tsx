@@ -5,7 +5,7 @@ import Link from 'next/link';
 import AddIngredientModal from '@/components/AddIngredientModal';
 import { InventoryIngredient } from '@/lib/types/ingredient';
 import { Reminder, ReminderType } from '@/lib/types/reminder';
-import { loadIngredients, saveIngredients } from '@/lib/reality/ingredients';
+import { loadIngredients, saveIngredients, groupIngredientsByStorage } from '@/lib/reality/ingredients';
 import { loadReminders } from '@/lib/reality/reminders';
 import { getDueReminders } from '@/lib/reality/reminder-engine';
 
@@ -23,6 +23,13 @@ const INTERVAL_KINDS: ReminderType[] = ['recurring', 'reality_check', 'replenish
 const getCurrentDateString = (): string => {
   const now = new Date();
   return now.toISOString().split('T')[0];
+};
+
+// 格式化日期显示：模块级纯函数，库存行组件与页面头部都要读日期
+const formatDate = (dateString: string): string => {
+  if (!dateString) return '';
+  const date = new Date(dateString);
+  return `${date.getFullYear()}年${date.getMonth() + 1}月${date.getDate()}日`;
 };
 
 // 判断食材状态
@@ -51,6 +58,68 @@ const getIngredientStatus = (expiryDate: string): 'normal' | 'expiring' | 'expir
 
 // 保存食材数据到 localStorage
 // 已迁移至 src/lib/reality/ingredients.ts 的 saveIngredients。
+
+/**
+ * 厨房库存的一行。
+ *
+ * 储存位置由所在的分组标题说明，行内不再重复一遍 —— 未指定的行以前会渲染成
+ * 「蔬菜 · 」这种悬空分隔符，位置是空还是没存根本看不出来。
+ */
+function IngredientRow({
+  ingredient,
+  onDelete
+}: {
+  ingredient: InventoryIngredient;
+  onDelete: (id: string) => void;
+}) {
+  const status = getIngredientStatus(ingredient.expiryDate);
+  let statusClass = '';
+  let statusText = '';
+
+  if (status === 'expiring') {
+    statusClass = 'bg-orange-100 text-orange-800';
+    statusText = '临期';
+  } else if (status === 'expired') {
+    statusClass = 'bg-red-100 text-red-800';
+    statusText = '已过期';
+  }
+
+  return (
+    <div className="bg-white border border-gray-200 rounded-lg p-4 relative">
+      {status !== 'normal' && (
+        <span className={`absolute top-2 right-2 text-xs px-2 py-1 rounded-full ${statusClass}`}>
+          {statusText}
+        </span>
+      )}
+
+      <div className="flex justify-between items-start">
+        <div>
+          <h3 className="font-semibold text-gray-900">{ingredient.name}</h3>
+          <p className="text-gray-600 mt-1">
+            {ingredient.quantity} {ingredient.unit}
+          </p>
+          {ingredient.category && (
+            <p className="text-sm text-gray-500 mt-2">{ingredient.category}</p>
+          )}
+          {ingredient.expiryDate && (
+            <p className="text-sm text-gray-500 mt-1">
+              {formatDate(ingredient.expiryDate)} 到期
+            </p>
+          )}
+        </div>
+
+        <button
+          onClick={() => onDelete(ingredient.id)}
+          className="text-gray-400 hover:text-red-500"
+        >
+          <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+            <path fillRule="evenodd" d="M9 2a1 1 0 00-.894.553L7.382 4H4a1 1 0 000 2v10a2 2 0 002 2h8a2 2 0 002-2V6a1 1 0 100-2h-3.382l-.724-1.447A1 1 0 0011 2H9zM7 8a1 1 0 012 0v6a1 1 0 11-2 0V8zm5-1a1 1 0 00-1 1v6a1 1 0 102 0V8a1 1 0 00-1-1z" clipRule="evenodd" />
+          </svg>
+        </button>
+      </div>
+    </div>
+  );
+}
 
 export default function RealityPage() {
   const [activeTab, setActiveTab] = useState<'home' | 'outside' | 'reminders'>('home');
@@ -83,6 +152,10 @@ export default function RealityPage() {
     ingredient => getIngredientStatus(ingredient.expiryDate) === 'expiring'
   ).length;
 
+  // 库存列表按储存位置分组（冷藏/冷冻/橱柜/常温/其他/未指定），空组不显示。
+  // 只是同一份 storageLocation 的另一种读法：CRUD、字段形状、统计口径都不变。
+  const kitchenGroups = groupIngredientsByStorage(ingredients);
+
   const handleAddIngredient = () => {
     setIsModalOpen(true);
   };
@@ -109,13 +182,6 @@ export default function RealityPage() {
     const updatedIngredients = ingredients.filter(ingredient => ingredient.id !== id);
     setIngredients(updatedIngredients);
     saveIngredients(updatedIngredients);
-  };
-
-  // 格式化日期显示
-  const formatDate = (dateString: string): string => {
-    if (!dateString) return '';
-    const date = new Date(dateString);
-    return `${date.getFullYear()}年${date.getMonth() + 1}月${date.getDate()}日`;
   };
 
   /** 提醒的调度描述：周期提醒说清间隔，单次提醒说清时间点 */
@@ -203,60 +269,24 @@ export default function RealityPage() {
                       + 添加食材
                     </button>
                     
-                    {/* 食材列表 */}
-                    <div className="space-y-3 mt-4">
-                      {ingredients.map((ingredient) => {
-                        const status = getIngredientStatus(ingredient.expiryDate);
-                        let statusClass = '';
-                        let statusText = '';
-
-                        if (status === 'expiring') {
-                          statusClass = 'bg-orange-100 text-orange-800';
-                          statusText = '临期';
-                        } else if (status === 'expired') {
-                          statusClass = 'bg-red-100 text-red-800';
-                          statusText = '已过期';
-                        }
-
-                        return (
-                          <div 
-                            key={ingredient.id} 
-                            className="bg-white border border-gray-200 rounded-lg p-4 relative"
-                          >
-                            {status !== 'normal' && (
-                              <span className={`absolute top-2 right-2 text-xs px-2 py-1 rounded-full ${statusClass}`}>
-                                {statusText}
-                              </span>
-                            )}
-                            
-                            <div className="flex justify-between items-start">
-                              <div>
-                                <h3 className="font-semibold text-gray-900">{ingredient.name}</h3>
-                                <p className="text-gray-600 mt-1">
-                                  {ingredient.quantity} {ingredient.unit}
-                                </p>
-                                <p className="text-sm text-gray-500 mt-2">
-                                  {ingredient.category} · {ingredient.storageLocation}
-                                </p>
-                                {ingredient.expiryDate && (
-                                  <p className="text-sm text-gray-500 mt-1">
-                                    {formatDate(ingredient.expiryDate)} 到期
-                                  </p>
-                                )}
-                              </div>
-                              
-                              <button 
-                                onClick={() => deleteIngredient(ingredient.id)}
-                                className="text-gray-400 hover:text-red-500"
-                              >
-                                <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
-                                  <path fillRule="evenodd" d="M9 2a1 1 0 00-.894.553L7.382 4H4a1 1 0 000 2v10a2 2 0 002 2h8a2 2 0 002-2V6a1 1 0 100-2h-3.382l-.724-1.447A1 1 0 0011 2H9zM7 8a1 1 0 012 0v6a1 1 0 11-2 0V8zm5-1a1 1 0 00-1 1v6a1 1 0 102 0V8a1 1 0 00-1-1z" clipRule="evenodd" />
-                                </svg>
-                              </button>
-                            </div>
+                    {/* 我的厨房：按储存位置分组，只有有数据的组才出现 */}
+                    <div className="space-y-6 mt-4">
+                      {kitchenGroups.map((group) => (
+                        <div key={group.location ?? 'unspecified'}>
+                          <h4 className="text-xs font-semibold uppercase tracking-wide text-gray-500">
+                            {group.label}
+                          </h4>
+                          <div className="space-y-3 mt-2">
+                            {group.items.map((ingredient) => (
+                              <IngredientRow
+                                key={ingredient.id}
+                                ingredient={ingredient}
+                                onDelete={deleteIngredient}
+                              />
+                            ))}
                           </div>
-                        );
-                      })}
+                        </div>
+                      ))}
                     </div>
                   </div>
                 )}

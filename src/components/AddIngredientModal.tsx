@@ -1,7 +1,11 @@
 'use client';
 
 import { useState } from 'react';
-import { InventoryIngredient } from '@/lib/types/ingredient';
+import {
+  InventoryIngredient,
+  KITCHEN_STORAGE_LOCATIONS,
+  UNSPECIFIED_STORAGE_LABEL
+} from '@/lib/types/ingredient';
 
 interface AddIngredientModalProps {
   isOpen: boolean;
@@ -19,13 +23,19 @@ export default function AddIngredientModal({ isOpen, onClose, onAddIngredient }:
     category: '蔬菜',
     purchaseDate: '',
     expiryDate: '',
-    storageLocation: '冷藏'
+    // 位置默认未指定：用户没选就等于系统替他决定放哪儿，而厨房不止冰箱一处 ——
+    // 猜错的行既进不了正确分组，也再没人会去改。
+    storageLocation: ''
   });
 
   const categories = ['蔬菜', '肉类', '水果', '奶制品', '主食', '调味品', '饮料', '其他'];
-  // 与 Parser 认的储存区域同一套口径：厨房不只是冰箱，橱柜和其他位置也要填得出来。
-  // 默认值仍是冷藏，本轮不动数据层兜底。
-  const storageLocations = ['冷藏', '冷冻', '橱柜', '常温', '其他'];
+  // 选项由类型层的联合类型派生，与 Parser 认的储存区域同一套口径：
+  // 词表以后加区域，表单不会漏项。「未指定」的 value 是空串而不是「未指定」——
+  // 那个字面量永远不该出现在现实数据里，它只是空值的显示文案。
+  const storageLocationOptions: { label: string; value: string }[] = [
+    { label: UNSPECIFIED_STORAGE_LABEL, value: '' },
+    ...KITCHEN_STORAGE_LOCATIONS.map((location) => ({ label: location, value: location }))
+  ];
 
   const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
     const { name, value } = e.target;
@@ -38,14 +48,14 @@ export default function AddIngredientModal({ isOpen, onClose, onAddIngredient }:
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     onAddIngredient(formData); // 调用父组件传递的回调函数
-    setFormData({ // 清空表单
+    setFormData({ // 清空表单，回到与初次打开一致的默认值（位置同样是未指定）
       name: '',
       quantity: '',
       unit: '',
       category: '蔬菜',
       purchaseDate: '',
       expiryDate: '',
-      storageLocation: '冷藏'
+      storageLocation: ''
     });
     onClose(); // 关闭模态框
   };
@@ -162,8 +172,8 @@ export default function AddIngredientModal({ isOpen, onClose, onAddIngredient }:
                   onChange={handleChange}
                   className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
                 >
-                  {storageLocations.map(location => (
-                    <option key={location} value={location}>{location}</option>
+                  {storageLocationOptions.map(option => (
+                    <option key={`storage-${option.value}`} value={option.value}>{option.label}</option>
                   ))}
                 </select>
               </div>

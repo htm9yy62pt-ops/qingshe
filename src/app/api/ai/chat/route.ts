@@ -496,7 +496,7 @@ ${formatRealityContext(realityContext)}
                 const { urgentIngredients, availableIngredients, expiredIngredients } = ingredientsAnalysis;
                 
                 // 构建食材描述
-                let ingredientsDescription = "【用户真实冰箱数据】\n\n";
+                let ingredientsDescription = "【用户真实厨房食材】\n\n";
                 
                 // 可用食材
                 if (availableIngredients.length > 0) {
@@ -548,7 +548,7 @@ ${formatRealityContext(realityContext)}
 
 ## 第一步：理解真实冰箱数据
 
-只有系统提供的【用户真实冰箱数据】才能被视为用户真实拥有的食材。
+只有系统提供的【用户真实厨房食材】才能被视为用户真实拥有的食材。
 不能假设用户拥有任何未提供的食材。
 
 ## 第二步：参考 Recipe Match 结果
@@ -583,7 +583,7 @@ ${formattedMatches}
 - 不要给出详细菜谱步骤（Execution Plan 尚未实现）
 - 不要推荐具体商店或商品购买链接
 
-以下是系统读取到的用户真实冰箱数据：
+以下是系统读取到的用户真实厨房食材：
 
 ${ingredientsDescription}
 
@@ -810,7 +810,7 @@ function describeKnownFacts(data: IngredientRecordData): string {
 }
 
 /**
- * 冰箱入库的落地指令。
+ * 厨房入库的落地指令。
  *
  * 卡片按钮与自然语言口令必须写出同一条记录 —— 之前两处各写一份字段映射，
  * 任何一处补字段（比如 storageLocation）都会悄悄漏掉另一处。
@@ -824,7 +824,9 @@ function ingredientRecord(data: IngredientRecordData): Record<string, unknown> {
     category: data.category || '其他',
     purchaseDate: data.purchaseDate,
     expiryDate: data.expiryDate || '',
-    storageLocation: data.location || '冷藏'
+    // 用户没说过位置就是空串（UI 显示「未指定」）。这里以前写 `|| '冷藏'`，
+    // 等于在落库前最后一步替用户把「我有鸡蛋」猜成了放冷藏 —— 猜测不许进现实数据。
+    storageLocation: data.location ?? ''
   };
 }
 

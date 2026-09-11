@@ -548,7 +548,8 @@ export default function HomePage() {
         category: (ingredientData.category as string) || '其他',
         purchaseDate: ingredientData.purchaseDate as string,
         expiryDate: ingredientData.expiryDate as string,
-        storageLocation: (ingredientData.storageLocation as string) || '冷藏',
+        // 位置与 API 侧同源：没说就是空，由 Reality 层显示成「未指定」，不替用户填冷藏
+        storageLocation: String(ingredientData.storageLocation ?? '').trim(),
         createdAt: new Date().toISOString().split('T')[0]
       };
       saveIngredients([...existingIngredients, newIngredient]);

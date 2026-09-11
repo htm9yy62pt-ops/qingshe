@@ -1097,7 +1097,9 @@ await chat(
     g.json.ingredient?.purchaseDate === '2026-03-14' &&
     // 未提供的字段落成空串/默认值，绝不能落成字符串 "undefined"
     g.json.ingredient?.expiryDate === '' &&
-    g.json.ingredient?.storageLocation === '冷藏' &&
+    // P1-2c 起这条不许再落 '冷藏'：按钮这条路用户从没说过位置，落库必须是空串，
+    // 「未指定」只是显示层文案。写 '冷藏' 等于系统替用户决定鸡蛋放哪儿。
+    g.json.ingredient?.storageLocation === '' &&
     g.json.draft === undefined &&
     sessionIntact(g)
 );
@@ -1722,7 +1724,7 @@ for (const cc of ccQueryCases) {
           `decision=${got.decision} | intent=${json?.intent} | requiredData=${JSON.stringify(json?.requiredData ?? [])} ` +
           `| classify=${classifyCalls} | ai=${got.aiCalls} | extract=${got.llmExtractCalls} ` +
           `| matches=${matches.length} | top=${first ? `${first.title}:${first.availableIngredients.join('+')}→${first.matchScore}分` : '-'} ` +
-          `| promptHasFridge=${aiSystemPrompt.includes('【用户真实冰箱数据】')}`;
+          `| promptHasKitchen=${aiSystemPrompt.includes('【用户真实厨房食材】')}`;
         return (
           json?.error === undefined &&
           json?.intent === 'REALITY_QUERY' &&
@@ -1736,7 +1738,7 @@ for (const cc of ccQueryCases) {
           got.decision === 'fallback' &&
           got.aiCalls === 1 &&
           got.llmExtractCalls === 0 &&
-          aiSystemPrompt.includes('【用户真实冰箱数据】')
+          aiSystemPrompt.includes('【用户真实厨房食材】')
         );
       }
     );

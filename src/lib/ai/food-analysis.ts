@@ -95,7 +95,8 @@ export function analyzeFoodIngredients(
   const urgentCount = urgentIngredients.length;
   const expiredCount = expiredIngredients.length;
   
-  let summary = `冰箱共有${totalIngredients}种食材`;
+  // 说「厨房」而不是「冰箱」：橱柜 / 常温 / 未指定位置的食材同样计入统计，这里不按位置过滤
+  let summary = `厨房共有${totalIngredients}种食材`;
   if (urgentCount > 0) {
     summary += `，其中${urgentCount}种临近过期`;
   }

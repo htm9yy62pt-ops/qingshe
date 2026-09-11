@@ -61,7 +61,8 @@ import {
   loadIngredients,
   saveIngredients,
   commitIngredients,
-  consumeIngredients
+  consumeIngredients,
+  groupIngredientsByStorage
 } from '../src/lib/reality/ingredients';
 import { updateInventory } from '../src/lib/reality/inventory-update';
 import {
@@ -72,6 +73,9 @@ import {
 } from '../src/lib/ai/record';
 import { recipeIngredientsToShoppingDrafts } from '../src/lib/ai/tasks';
 import type { RecipeIngredient } from '../src/lib/types/recipe';
+import type { Recipe } from '../src/lib/types/recipe';
+import { analyzeFoodIngredients } from '../src/lib/ai/food-analysis';
+import { matchRecipes } from '../src/lib/ai/recipe-match';
 import { extractInitialConsumableDrafts } from '../src/lib/ai/tasks/consumable-task';
 import {
   applyConsumableSessionReply,
@@ -79,7 +83,7 @@ import {
 } from '../src/lib/ai/tasks/consumable-session';
 import type { ConsumableItem } from '../src/lib/types/consumable';
 import type { ShoppingItemDraft } from '../src/lib/ai/tasks';
-import type { InventoryIngredient } from '../src/lib/types/ingredient';
+import { describeStorageLocation, type InventoryIngredient } from '../src/lib/types/ingredient';
 import type { ConsumedIngredient } from '../src/lib/types/execution-result';
 import { readFileSync } from 'fs';
 import { join } from 'path';
@@ -754,7 +758,8 @@ async function main() {
     category: d.data.category || '其他',
     purchaseDate: d.data.purchaseDate,
     expiryDate: d.data.expiryDate || '',
-    storageLocation: d.data.location || '冷藏'
+    // 与生产端 ingredientRecord 同源：用户没说位置就是空串，卡片不替它填冷藏
+    storageLocation: d.data.location ?? ''
   }));
   // 复刻 page.tsx SAVE_INGREDIENTS 分支：每行 payload → InventoryIngredient，一次 saveIngredients
   const origSetItem = fakeLocalStorage.setItem;
@@ -772,7 +777,8 @@ async function main() {
     category: String(row.category || '其他') as InventoryIngredient['category'],
     purchaseDate: String(row.purchaseDate ?? ''),
     expiryDate: String(row.expiryDate || ''),
-    storageLocation: String(row.storageLocation || '冷藏') as InventoryIngredient['storageLocation'],
+    // Reality 层不再兜底默认位置：空值原样落空串，显示文案由 describeStorageLocation 负责
+    storageLocation: String(row.storageLocation ?? '').trim() as InventoryIngredient['storageLocation'],
     createdAt: new Date().toISOString().split('T')[0]
   }));
   saveIngredients([...loadIngredients(), ...r2Rows]);
@@ -784,6 +790,7 @@ async function main() {
       r2Stored.length === 5 &&
       r2Stored.map((i) => i.name).join(',') === '牛肉,豌豆,鸡蛋,西红柿,洋葱' &&
       r2Stored.every(
+        // 「冰箱里有…」说出了区域 → 冷藏是用户给的，不是系统猜的
         (i) => i.storageLocation === '冷藏' && i.quantity === '1' && !!i.purchaseDate
       ),
     JSON.stringify({
@@ -918,7 +925,7 @@ async function main() {
       p53PaperRow?.status === 'pending' &&
       p53Stored.length === 3 &&
       p53SaltRow?.purchaseDate === p53Today &&
-      p53SaltRow?.storageLocation === '冷藏' &&
+      p53SaltRow?.storageLocation === '' &&
       p53SaltRow?.quantity === '1',
     JSON.stringify({
       restocked: p53Restocked,
@@ -942,6 +949,238 @@ async function main() {
       anchors: p53Round3.restockAnchors,
       inventory: loadIngredients().map((i) => i.name)
     })
+  );
+
+  /* ---------- P1-2c：我的厨房 = 资源语义统一 ---------- */
+
+  console.log('\n=== P1-2c 我的厨房：未指定 / 分组 / 旧数据 ===');
+
+  resetStorage();
+  const kcCommitted = commitIngredients([
+    { name: '牛肉', storageLocation: '冷藏' },
+    { name: '鸡蛋', storageLocation: '冷藏' },
+    { name: '水饺', storageLocation: '冷冻' },
+    { name: '食盐', storageLocation: '橱柜' },
+    { name: '食用油', storageLocation: '常温' },
+    { name: '西红柿' }
+  ]).items;
+  const kcGroups = groupIngredientsByStorage(kcCommitted);
+  const kcNamesOf = (label: string) =>
+    (kcGroups.find((group) => group.label === label)?.items ?? []).map((item) => item.name);
+  const kcRowOf = (name: string) => kcCommitted.find((item) => item.name === name);
+
+  check(
+    'KC1 用户说了冷藏 → 落库是「冷藏」，页面进「冷藏」组',
+    kcNamesOf('冷藏').join('+') === '牛肉+鸡蛋' &&
+      kcRowOf('牛肉')?.storageLocation === '冷藏' &&
+      describeStorageLocation(kcRowOf('牛肉')?.storageLocation) === '冷藏',
+    kcGroups.map((group) => `${group.label}(${group.items.length})`).join(' ')
+  );
+
+  check(
+    'KC2 用户说了冷冻 → 落库是「冷冻」，页面进「冷冻」组',
+    kcNamesOf('冷冻').join('+') === '水饺' &&
+      kcRowOf('水饺')?.storageLocation === '冷冻' &&
+      describeStorageLocation(kcRowOf('水饺')?.storageLocation) === '冷冻',
+    `冷冻组=${JSON.stringify(kcNamesOf('冷冻'))}`
+  );
+
+  check(
+    'KC3 用户说了橱柜 → 进「橱柜」组，绝不因为「厨房=冰箱」被并回冷藏',
+    kcNamesOf('橱柜').join('+') === '食盐' && !kcNamesOf('冷藏').includes('食盐'),
+    `橱柜组=${JSON.stringify(kcNamesOf('橱柜'))}，冷藏组=${JSON.stringify(kcNamesOf('冷藏'))}`
+  );
+
+  check(
+    'KC4 用户没说位置 → 单独一组显示「未指定」，底层存空串而不是「未指定」字面量',
+    kcNamesOf('未指定').join('+') === '西红柿' &&
+      kcRowOf('西红柿')?.storageLocation === '' &&
+      describeStorageLocation(kcRowOf('西红柿')?.storageLocation) === '未指定',
+    `西红柿.storageLocation=${JSON.stringify(kcRowOf('西红柿')?.storageLocation)}`
+  );
+
+  check(
+    'KC4b 只有有数据的组才出现，顺序固定为 冷藏→冷冻→橱柜→常温→其他→未指定',
+    kcGroups.map((group) => group.label).join('>') === '冷藏>冷冻>橱柜>常温>未指定' &&
+      kcGroups.every((group) => group.items.length > 0),
+    kcGroups.map((group) => `${group.label}(${group.items.length})`).join(' ')
+  );
+
+  // 落库端不再兜底默认位置：这条锁的是「我有鸡蛋」这类无区域句子的最终形状
+  resetStorage();
+  const kcNoGuess = commitIngredients([{ name: '鸡蛋' }, { name: '土豆', storageLocation: '  ' }]).items;
+  check(
+    'KC4c commitIngredients 不替用户猜位置：空/空白值一律落空串',
+    kcNoGuess.length === 2 && kcNoGuess.every((item) => item.storageLocation === ''),
+    JSON.stringify(kcNoGuess.map((item) => `${item.name}:${JSON.stringify(item.storageLocation)}`))
+  );
+
+  // 历史数据：旧版本落盘时根本没有 storageLocation 字段；也可能有认不出的手写值
+  const legacyRows = [
+    {
+      id: 'legacy_no_field', name: '老干妈', quantity: '1', unit: '瓶', category: '调味品',
+      purchaseDate: '2026-01-01', expiryDate: '', createdAt: '2026-01-01'
+    },
+    {
+      id: 'legacy_odd_value', name: '挂面', quantity: '1', unit: '把', category: '主食',
+      purchaseDate: '2026-01-01', expiryDate: '', storageLocation: '碗柜', createdAt: '2026-01-01'
+    }
+  ] as unknown as InventoryIngredient[];
+  const legacyGroups = groupIngredientsByStorage(legacyRows);
+  const legacyNamesOf = (label: string) =>
+    (legacyGroups.find((group) => group.label === label)?.items ?? []).map((item) => item.name);
+
+  check(
+    'KC8 旧数据缺 storageLocation：不报错、不丢行、显示未指定，也不被迁成别的位置',
+    legacyNamesOf('未指定').join('+') === '老干妈' && legacyRows[0].storageLocation === undefined,
+    legacyGroups.map((group) => `${group.label}(${group.items.length})`).join(' ')
+  );
+
+  check(
+    'KC8b 认不出的历史值：显示上归进「其他」，字段原值一个字节都不改',
+    legacyNamesOf('其他').join('+') === '挂面' &&
+      legacyRows[1].storageLocation === '碗柜' &&
+      describeStorageLocation('碗柜') === '其他',
+    `其他组=${JSON.stringify(legacyNamesOf('其他'))}`
+  );
+
+  // 「其他」既是被支持的位置也是兜底归组：一个桶只能出现一次，否则页面把同一批食材显示两遍
+  const mixedGroups = groupIngredientsByStorage([
+    ...legacyRows,
+    { ...legacyRows[1], id: 'declared_other', name: '杂项', storageLocation: '其他' }
+  ]);
+  check(
+    'KC8d 显式「其他」与认不出的值共用一个分组，标题不重复、行数不翻倍',
+    mixedGroups.map((group) => group.label).join('>') === '其他>未指定' &&
+      mixedGroups.reduce((sum, group) => sum + group.items.length, 0) === mixedGroups.length + 1,
+    mixedGroups.map((group) => `${group.label}(${group.items.length})`).join(' ')
+  );
+
+  resetStorage();
+  fakeLocalStorage.setItem('qingshe_ingredients', JSON.stringify(legacyRows));
+  saveIngredients(loadIngredients());
+  const legacyAfter = loadIngredients();
+  check(
+    'KC8c 旧数据整批「读→分组→写回」一趟：行数与字段全须全尾，无需 migration',
+    legacyAfter.length === 2 &&
+      legacyAfter[0].storageLocation === undefined &&
+      legacyAfter[1].storageLocation === '碗柜' &&
+      groupIngredientsByStorage(legacyAfter).map((group) => group.label).join('>') === '其他>未指定',
+    JSON.stringify(legacyAfter.map((item) => `${item.name}:${JSON.stringify(item.storageLocation)}`))
+  );
+
+  /* ---------- P1-2c KC5-KC7：可用性由 status / 保质期决定，与 storageLocation 无关 ----------
+   *
+   * 直接打真实链路的两段纯函数：analyzeFoodIngredients（决定谁能进 availableIngredients）
+   * → matchRecipes（只消费 availableIngredients）。全离线、零 LLM、零 localStorage，
+   * 保质期相对「今天」现算，任何一天跑结果都一致。
+   * ------------------------------------------------------------------ */
+
+  console.log('\n=== P1-2c KC5-KC7：recipe matching 的可用资源范围 ===');
+
+  const kcDay = (offset: number) =>
+    new Date(Date.now() + offset * 86400000).toISOString().split('T')[0];
+
+  const kcRecipe: Recipe = {
+    id: 'kc-recipe',
+    title: '三味乱炖',
+    description: 'KC 回归专用菜谱',
+    category: '家常菜',
+    ingredients: [
+      { name: '牛肉', required: true },
+      { name: '豌豆', required: true },
+      { name: '食盐', required: true }
+    ],
+    optionalIngredients: [],
+    steps: [{ step: 1, content: '炖' }],
+    estimatedTime: 30,
+    difficulty: 'easy',
+    tags: [],
+    sourceType: 'official',
+    createdAt: new Date(0),
+    updatedAt: new Date(0)
+  };
+
+  // 五种位置各出一味可用食材；「未指定」用空串，正是落库的真实形状
+  const kcKitchen: InventoryIngredient[] = [
+    { id: 'kc-1', name: '牛肉', quantity: '200', unit: 'g', category: '肉类', purchaseDate: kcDay(-1), expiryDate: kcDay(5), storageLocation: '冷藏', createdAt: kcDay(-1) },
+    { id: 'kc-2', name: '豌豆', quantity: '1', unit: '把', category: '蔬菜', purchaseDate: kcDay(-1), expiryDate: kcDay(5), storageLocation: '冷冻', createdAt: kcDay(-1) },
+    { id: 'kc-3', name: '食盐', quantity: '1', unit: '袋', category: '调味品', purchaseDate: kcDay(-1), expiryDate: kcDay(30), storageLocation: '橱柜', createdAt: kcDay(-1) },
+    { id: 'kc-4', name: '鸡蛋', quantity: '3', unit: '个', category: '蛋类', purchaseDate: kcDay(-1), expiryDate: kcDay(5), storageLocation: '常温', createdAt: kcDay(-1) },
+    { id: 'kc-5', name: '西红柿', quantity: '2', unit: '个', category: '蔬菜', purchaseDate: kcDay(-1), expiryDate: '', storageLocation: '', createdAt: kcDay(-1) }
+  ];
+
+  const kc5Analysis = analyzeFoodIngredients(kcKitchen);
+  const kc5Match = matchRecipes(kc5Analysis, [kcRecipe], [])[0];
+  check(
+    'KC5 冷藏/冷冻/橱柜/常温/未指定五种位置的可用食材全部参与分析与匹配',
+    kc5Analysis.availableIngredients.length === 5 &&
+      new Set(kc5Analysis.availableIngredients.map((item) => item.storageLocation)).size === 5 &&
+      !!kc5Match &&
+      kc5Match.availableIngredients.join('+') === '牛肉+豌豆+食盐' &&
+      kc5Match.missingIngredients.length === 0 &&
+      kc5Match.matchScore === 70,
+    `available=${kc5Analysis.availableIngredients.map((item) => `${item.name}(${item.storageLocation || '未指定'})`).join(' ')} ` +
+      `| match=${kc5Match ? `${kc5Match.availableIngredients.join('+')}→${kc5Match.matchScore}分` : 'null'}`
+  );
+
+  // KC6 只用项目里真实存在的两种「不可用」：status==='finished' 与保质期已过（urgency==='expired'）
+  const kc6Kitchen: InventoryIngredient[] = [
+    ...kcKitchen,
+    { ...kcKitchen[0], id: 'kc-6', name: '酸奶', expiryDate: kcDay(5), storageLocation: '冷藏', status: 'finished' as const },
+    { ...kcKitchen[0], id: 'kc-7', name: '豆腐', expiryDate: kcDay(-2), storageLocation: '冷藏' }
+  ];
+  const kc6Recipe: Recipe = {
+    ...kcRecipe,
+    id: 'kc-recipe-2',
+    ingredients: [...kcRecipe.ingredients, { name: '豆腐', required: true }]
+  };
+  const kc6Analysis = analyzeFoodIngredients(kc6Kitchen);
+  const kc6Names = new Set(kc6Analysis.availableIngredients.map((item) => item.name));
+  const kc6Match = matchRecipes(kc6Analysis, [kc6Recipe], [])[0];
+  check(
+    'KC6 已吃完（finished）不进任何分类；已过期进 expired、不进 available、也不进匹配已有食材',
+    !kc6Names.has('酸奶') &&
+      !kc6Analysis.expiredIngredients.some((item) => item.name === '酸奶') &&
+      !kc6Names.has('豆腐') &&
+      kc6Analysis.expiredIngredients.some((item) => item.name === '豆腐') &&
+      !!kc6Match &&
+      !kc6Match.availableIngredients.includes('豆腐') &&
+      kc6Match.missingIngredients.includes('豆腐') &&
+      kc6Match.availableIngredients.join('+') === '牛肉+豌豆+食盐',
+    `available=${[...kc6Names].join('+')} | expired=${kc6Analysis.expiredIngredients.map((item) => item.name).join('+')} ` +
+      `| missing=${kc6Match ? kc6Match.missingIngredients.join('+') : 'null'}`
+  );
+
+  // KC7 同一批食材，只改 storageLocation（三档轮换，含空串），可用性结论必须一模一样
+  const kc7Variants = [
+    kcKitchen,
+    kcKitchen.map((item, i) => ({ ...item, storageLocation: ['橱柜', '常温', ''][i % 3] })),
+    kcKitchen.map((item, i) => ({ ...item, storageLocation: ['冷冻', '冷藏', '其他'][i % 3] }))
+  ];
+  const kc7Shapes = kc7Variants.map((items) =>
+    JSON.stringify(
+      analyzeFoodIngredients(items).availableIngredients
+        .map((item) => `${item.name}:${item.urgency}`)
+        .sort()
+    )
+  );
+  const kc7Matches = kc7Variants.map((items) => {
+    const detail = matchRecipes(analyzeFoodIngredients(items), [kcRecipe], [])[0];
+    return JSON.stringify(
+      detail && {
+        title: detail.recipe.title,
+        availableIngredients: detail.availableIngredients,
+        missingIngredients: detail.missingIngredients,
+        matchScore: detail.matchScore
+      }
+    );
+  });
+  check(
+    'KC7 仅改变 storageLocation：可用名单、紧急度与匹配结果全部不变',
+    kc7Shapes[0] === kc7Shapes[1] && kc7Shapes[1] === kc7Shapes[2] &&
+      kc7Matches[0] === kc7Matches[1] && kc7Matches[1] === kc7Matches[2],
+    `variant1=...${kc7Shapes[0].slice(-60)} | match1=${kc7Matches[0]}`
   );
 
   /* ---------- 汇总 ---------- */

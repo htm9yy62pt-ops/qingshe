@@ -17,6 +17,7 @@
  * - 不调用 LLM，不调用 localStorage，纯函数 + 轻量文本判定。
  */
 
+import type { KitchenStorageLocation } from '@/lib/types/ingredient';
 import type {
   ActiveTaskSnapshot,
   AITaskContext,
@@ -92,8 +93,11 @@ export const FRIDGE_RECORD_ENTRY_RE =
  * `location === undefined` 不是缺省，是**真值**：「厨房」只是顶层场所，
  * 不等于冷藏/冷冻/橱柜中的任何一处。Parser 只记录用户说出来的位置，
  * 没说过的一律留 undefined，绝不在这张表里替用户做主填成「冷藏」。
+ *
+ * 联合类型本身住在 `@/lib/types/ingredient`（数据契约）：Reality 层与 UI 也要按同一套
+ * 位置分组显示，让它们反向 import AI 层是倒置的依赖。这里 re-export 保持既有引用不变。
  */
-export type KitchenStorageLocation = '冷藏' | '冷冻' | '橱柜' | '常温' | '其他';
+export type { KitchenStorageLocation } from '@/lib/types/ingredient';
 
 export const KITCHEN_REGION_LEXICON: ReadonlyArray<{
   words: readonly string[];

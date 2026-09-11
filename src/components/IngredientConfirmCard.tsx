@@ -1,4 +1,5 @@
 import type { IngredientRecordData, IngredientRecordDraft } from '@/lib/ai/record';
+import { describeStorageLocation, normalizeStorageLocation } from '@/lib/types/ingredient';
 
 /**
  * 食材确认卡。纯展示：草稿由宿主提供，按钮把点击回传给宿主处理。
@@ -112,12 +113,12 @@ function IngredientFacts({
           : 'mt-1 flex flex-wrap gap-x-3 text-sm text-emerald-800'
       }
     >
-      <span>{data.name}</span>
-      {/* 储存位置只回显用户说出口的区域，没说就是「未指定」。
-          落库时 Reality 层仍会兜底一个默认位置，那是下一阶段的口径，卡片不替它圆场。 */}
-      <span className={data.location ? undefined : 'text-emerald-600'}>
+      <span> {data.name}</span>
+      {/* 储存位置的文案与 Reality 层同一份读法：没说（undefined / 空串）就是「未指定」。
+          落库端也不再兜底默认位置，卡片与库存页看到的永远是同一个口径。 */}
+      <span className={normalizeStorageLocation(data.location) ? undefined : 'text-emerald-600'}>
         {data.quantity ? `${data.quantity}${data.unit || '份'} · ` : ''}
-        {data.location ?? '未指定'}
+        {describeStorageLocation(data.location)}
       </span>
       {data.purchaseDate ? <span>{data.purchaseDate} 购入</span> : null}
       {data.expiryDate ? (

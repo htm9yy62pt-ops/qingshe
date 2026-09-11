@@ -40,7 +40,7 @@ export async function classifyIntent(message: string): Promise<IntentResult> {
   const systemPrompt = `你是轻舍 Qingshe 的意图分类器。
 你的任务不是回答用户问题，而是判断用户输入属于哪一种 Intent，并确定需要哪些真实数据来回答用户问题。
 只能从 REALITY_RECORD、REALITY_QUERY、LIFE_SOLUTION、EMOTIONAL_REDIRECT、UNSUPPORTED 中选择一个。
-对于需要真实数据的情况，指定所需数据类型。当前可用数据类型包括：ingredients（冰箱食材）、home_items（家中物品）、consumables（消耗品）、favorite_places（常去地点）、reminders（提醒事项）、preferences（偏好设置）、family_members（家庭成员）。
+对于需要真实数据的情况，指定所需数据类型。当前可用数据类型包括：ingredients（厨房食材）、home_items（家中物品）、consumables（消耗品）、favorite_places（常去地点）、reminders（提醒事项）、preferences（偏好设置）、family_members（家庭成员）。
 必须返回严格 JSON，不要 Markdown，不要解释文字。
 
 分类标准：
