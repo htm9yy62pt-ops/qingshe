@@ -394,7 +394,7 @@ export default function ShoppingListPage() {
       </main>
 
       {selectedIds.size > 0 && (
-        <div className="fixed bottom-0 inset-x-0 border-t border-gray-200 bg-white/95 backdrop-blur">
+        <div className="fixed bottom-0 inset-x-0 z-20 border-t border-gray-200 bg-white/95 backdrop-blur">
           <div className="max-w-md mx-auto px-4 py-3 flex items-center gap-3">
             <button
               type="button"
