@@ -120,6 +120,8 @@ export interface AddShoppingItemDraft {
   neededBy?: string;
   remindAt?: string;
   notes?: string;
+  /** 菜谱缺料转采购时携带的菜谱 id；普通草稿不设置，持久化时原样写入 item。 */
+  recipeId?: string;
 }
 
 export interface AddShoppingItemsInput {
@@ -182,6 +184,7 @@ export function addItemsToShoppingList(
     neededBy: draft.neededBy?.trim() || undefined,
     remindAt: draft.remindAt?.trim() || undefined,
     notes: draft.notes?.trim() || undefined,
+    recipeId: draft.recipeId,
     status: 'pending',
     source: input.source,
     sourceType: input.source === 'manual' ? 'manual' : 'recipe',

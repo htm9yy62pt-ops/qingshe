@@ -180,7 +180,8 @@ export function RecipeDetailModal({
   const handleAddToShoppingList = () => {
     const drafts = recipeIngredientsToShoppingDrafts(
       fullRecipe?.ingredients ?? [],
-      recommended.missingIngredients ?? []
+      recommended.missingIngredients ?? [],
+      fullRecipe?.id
     );
     if (drafts.length === 0) {
       setShoppingNotice('这个菜谱没有需要购买的食材。');

@@ -471,7 +471,8 @@ export function looksLikeAddShoppingItem(message: string): boolean {
  */
 export function recipeIngredientsToShoppingDrafts(
   ingredients: readonly RecipeIngredient[],
-  missingNames: readonly string[]
+  missingNames: readonly string[],
+  recipeId?: string
 ): ShoppingItemDraft[] {
   const missing = missingNames.map((name) => name.trim()).filter(Boolean);
   if (missing.length === 0) return [];
@@ -489,14 +490,15 @@ export function recipeIngredientsToShoppingDrafts(
     drafts.push({
       name,
       ...(quantity ? { quantity: Number(quantity[1]) } : {}),
-      ...(unit ? { unit } : {})
+      ...(unit ? { unit } : {}),
+      ...(recipeId ? { recipeId } : {})
     });
   }
 
   for (const name of missing) {
     if (covered.has(name)) continue;
     covered.add(name);
-    drafts.push({ name });
+    drafts.push({ name, ...(recipeId ? { recipeId } : {}) });
   }
 
   return drafts;

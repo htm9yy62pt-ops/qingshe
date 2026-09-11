@@ -717,6 +717,92 @@ async function main() {
     })
   );
 
+  /* ---------- B1：Recipe → ShoppingListItem 的 recipeId 透传 ---------- */
+
+  console.log('\n=== B1 recipeId 透传链 ===');
+  resetStorage();
+  const b1Tomato: RecipeIngredient = { name: '番茄', quantity: '2个', unit: '个', required: true };
+  const b1Salt: RecipeIngredient = { name: '盐', quantity: '适量', unit: '', required: true };
+
+  // B1-1：多缺料 + recipeId → 每条 draft 都盖上同一个 recipeId
+  const b1WithId = recipeIngredientsToShoppingDrafts(
+    [b1Tomato, b1Salt],
+    ['番茄', '盐', '豆腐'],
+    'recipe-test-001'
+  );
+  check(
+    'B1-1 传 recipeId：多条缺料 draft 的 recipeId 全部等于 recipe-test-001',
+    b1WithId.length === 3 &&
+      b1WithId.every((d) => d.recipeId === 'recipe-test-001') &&
+      b1WithId.some((d) => d.name === '番茄' && d.quantity === 2 && d.unit === '个'),
+    JSON.stringify(b1WithId)
+  );
+
+  // B1-2：豆腐不在结构化表 → 走 fallback 只生成 { name }，recipeId 仍必须保留
+  const b1Fallback = b1WithId.find((d) => d.name === '豆腐');
+  check(
+    'B1-2 fallback draft：只有 name 的豆腐也带上同一 recipeId',
+    !!b1Fallback &&
+      b1Fallback.recipeId === 'recipe-test-001' &&
+      b1Fallback.quantity === undefined &&
+      b1Fallback.unit === undefined,
+    JSON.stringify(b1Fallback)
+  );
+
+  // B1-3：不传 recipeId → 全部 undefined，数量/单位旧行为不变
+  const b1NoId = recipeIngredientsToShoppingDrafts([b1Tomato, b1Salt], ['番茄', '盐', '豆腐']);
+  check(
+    'B1-3 不传 recipeId：所有 draft 的 recipeId 保持 undefined，普通购物行为不受影响',
+    b1NoId.length === 3 &&
+      b1NoId.every((d) => d.recipeId === undefined) &&
+      b1NoId.some((d) => d.name === '番茄' && d.quantity === 2 && d.unit === '个'),
+    JSON.stringify(b1NoId)
+  );
+
+  // B1-4：带 recipeId 的 drafts 经 addItemsToShoppingList → item.recipeId 逐条对应
+  const b1Persist = addItemsToShoppingList(getShoppingLists(), {
+    items: b1WithId,
+    source: 'ai'
+  });
+  check(
+    'B1-4 持久化：ShoppingListItem.recipeId 等于对应 draft 的 recipeId（番茄/盐/豆腐）',
+    b1Persist.addedItems.length === 3 &&
+      b1Persist.addedItems.every(
+        (item) =>
+          item.recipeId ===
+          b1WithId.find((d) => d.name === item.name)?.recipeId
+      ) &&
+      b1Persist.addedItems.every((item) => item.recipeId === 'recipe-test-001'),
+    JSON.stringify(b1Persist.addedItems.map((i) => ({ name: i.name, recipeId: i.recipeId })))
+  );
+
+  // B1-5：普通 shopping draft 无 recipeId → 正常创建 item，不引入异常行为
+  const b1Plain = addItemsToShoppingList(getShoppingLists(), {
+    items: [{ name: '面巾纸', quantity: 1, unit: '包' }],
+    source: 'ai'
+  });
+  check(
+    'B1-5 普通草稿：无 recipeId 也正常创建 item（字段不变形，recipeId 为 undefined）',
+    b1Plain.addedItems.length === 1 &&
+      b1Plain.addedItems[0].name === '面巾纸' &&
+      b1Plain.addedItems[0].quantity === 1 &&
+      b1Plain.addedItems[0].recipeId === undefined,
+    JSON.stringify(b1Plain.addedItems)
+  );
+
+  // B1-6（多缺料落盘侧）：同一 recipe 的多个 items 在真实落盘 JSON 里 recipeId 一致
+  const b1Stored = JSON.parse(String(localStorage.getItem('qingshe_shopping_lists')));
+  const b1StoredItems = b1Stored.flatMap((l: ShoppingList) => l.items);
+  const b1Tagged = b1StoredItems.filter(
+    (i: { recipeId?: string }) => i.recipeId === 'recipe-test-001'
+  );
+  check(
+    'B1-6 落盘侧：同一 recipe 的 3 个 items 在 qingshe_shopping_lists 里 recipeId 全部一致',
+    b1Tagged.length === 3 &&
+      new Set(b1Tagged.map((i: { recipeId?: string }) => i.recipeId)).size === 1,
+    JSON.stringify(b1StoredItems.map((i: { name: string; recipeId?: string }) => ({ name: i.name, recipeId: i.recipeId })))
+  );
+
   /* ---------- R1：制作消耗不越界、不被旧快照覆盖 ---------- */
 
   const ing = (over: Partial<InventoryIngredient> & { id: string; name: string }): InventoryIngredient => ({

@@ -66,6 +66,8 @@ export interface ShoppingItemDraft {
   neededBy?: string;
   remindAt?: string;
   notes?: string;
+  /** 菜谱缺料转采购时携带的菜谱 id；普通购物草稿不设置。 */
+  recipeId?: string;
 }
 
 /**
