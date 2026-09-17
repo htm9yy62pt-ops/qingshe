@@ -25,7 +25,7 @@ import type {
   RestockItemDraft,
   ShoppingItemDraft
 } from './types';
-import type { ShoppingList } from '@/lib/types/shopping-list';
+import type { ShoppingList, ShoppingListItem } from '@/lib/types/shopping-list';
 import type { RecipeIngredient } from '@/lib/types/recipe';
 import { isNegatedPurchase, readPurchaseCancellation } from './action-guard';
 
@@ -529,18 +529,51 @@ const PURCHASE_COMPLETE_PHRASES = [
  * 把条目勾成 purchased，再开口说「都买回来了」。只认 pending 会把这条最正常的路径
  * 退回消耗品录入，正是要修的 bug。cancelled 仍然排除 —— 用户明确不要的东西
  * 不该被一句话拽回厨房。
+ *
+ * 匹配顺序（确定性规则，不猜、不调 AI）：
+ * a. 显式点名优先：消息里包含商品名的条目整组返回，不进兜底逻辑；
+ * b. 一个候选都没有（清单空 / 全部 cancelled / 全部已入库）→ 返回 []；
+ * c. 单候选：必须有非空 recipeId（菜谱缺料）才认，无归属的普通项不凭条数猜；
+ * d. 多候选：全部条目都拥有相同且非空的 recipeId（同一道菜的缺料）→ 整组返回；
+ * e. 「都 / 全」不是独立判据：多道菜混杂或菜谱组混普通项时，一律返回 [] 落回原路由，
+ *    宁可漏一次入库卡，也不把 A 菜的料算进 B 菜。
+ * 判据只来自 ShoppingListItem 自身字段，不看 createdAt、不看清单顺序、
+ * 不看 list.recipeId —— 旧 list 级元数据代表不了 item 的真实来源。
  */
-function readRestockTargets(message: string, lists: ShoppingList[] = []): RestockItemDraft[] {
-  return lists.flatMap(list =>
+export function readRestockTargets(message: string, lists: ShoppingList[] = []): RestockItemDraft[] {
+  // 仅供 storage-harness 直测（deterministic 无 AI 链路）；生产调用方只有 runPurchaseCompleteTask。
+  const alive = (item: ShoppingListItem) =>
+    item.name && item.status !== 'cancelled' && !item.restockedAt;
+
+  // 第一步永远不变：消息点了名，点名优先
+  const named = lists.flatMap(list =>
     list.items
-      .filter(item =>
-        item.name &&
-        item.status !== 'cancelled' &&
-        !item.restockedAt &&
-        message.includes(item.name)
-      )
+      .filter(item => alive(item) && message.includes(item.name))
       .map(item => ({ ...item, listId: list.id }))
   );
+  if (named.length > 0) return named;
+
+  // 没点名的「买好了」→ 无商品名上下文兜底（确定性规则，不猜）
+  const candidates = lists.flatMap(list =>
+    list.items
+      .filter(alive)
+      .map(item => ({ ...item, listId: list.id }))
+  );
+  if (candidates.length === 0) return [];
+
+  // 单候选:有非空 recipeId(菜谱缺料)才认;无归属的普通项不凭条数猜。
+  if (candidates.length === 1) {
+    return candidates[0].recipeId ? candidates : [];
+  }
+
+  const recipeIds = new Set(
+    candidates.map(item => item.recipeId).filter((id): id is string => !!id)
+  );
+  // 同一道菜的缺料整组到手：item.recipeId 是 B1 之后唯一可靠的菜谱归属
+  if (recipeIds.size === 1 && candidates.every(item => !!item.recipeId)) {
+    return candidates;
+  }
+  return [];
 }
 
 /**

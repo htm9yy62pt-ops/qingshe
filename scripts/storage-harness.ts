@@ -73,6 +73,7 @@ import {
   buildIngredientDraft
 } from '../src/lib/ai/record';
 import { recipeIngredientsToShoppingDrafts } from '../src/lib/ai/tasks';
+import { readRestockTargets } from '../src/lib/ai/tasks/shopping-task';
 import type { RecipeIngredient } from '../src/lib/types/recipe';
 import type { Recipe } from '../src/lib/types/recipe';
 import { analyzeFoodIngredients } from '../src/lib/ai/food-analysis';
@@ -90,7 +91,7 @@ import { readFileSync } from 'fs';
 import { join } from 'path';
 // P0_5_3：采购完成入库这一段直接打真实的 route handler，核心链路一律不 mock。
 import { POST } from '../src/app/api/ai/chat/route';
-import type { ShoppingList } from '../src/lib/types/shopping-list';
+import type { ShoppingList, ShoppingListItem } from '../src/lib/types/shopping-list';
 import type { ChatApiResponse } from '../src/lib/types/chat';
 
 // route.ts 在 Router Gate 之前先校验 AMD_AI_API_KEY / AMD_AI_MODEL，
@@ -801,6 +802,143 @@ async function main() {
     b1Tagged.length === 3 &&
       new Set(b1Tagged.map((i: { recipeId?: string }) => i.recipeId)).size === 1,
     JSON.stringify(b1StoredItems.map((i: { name: string; recipeId?: string }) => ({ name: i.name, recipeId: i.recipeId })))
+  );
+
+  /* ---------- B2 purchase-complete unnamed target resolution ----------
+   *
+   * readRestockTargets 是「买好了 / 买回来了」没点名商品时的目标选择器。
+   * 直接喂 ShoppingList[] 断言返回的 listId+itemId,不经 router、不碰 AI。
+   * 注意与文件上方历史编号「B2 确认卡片」无关,这里是本轮新增的 B2-1..B2-9。
+   */
+
+  console.log('\n=== B2 purchase-complete unnamed target resolution ===');
+  const b2Item = (
+    id: string,
+    name: string,
+    over: Partial<ShoppingListItem> = {}
+  ): ShoppingListItem => ({
+    id,
+    name,
+    status: 'pending',
+    createdAt: '2026-03-01T00:00:00.000Z',
+    ...over
+  });
+  const b2List = (items: ShoppingListItem[], id = 'list-b2'): ShoppingList => ({
+    id,
+    title: 'B2 测试清单',
+    items,
+    createdAt: '2026-03-01T00:00:00.000Z'
+  });
+  const b2Names = (targets: { name: string }[]) => targets.map((t) => t.name).join('+');
+  // B2-1:无商品名 + 仅 1 个带非空 recipeId 的候选 → 返回该候选(新规则:无 recipeId 的单候选不选)
+  const b2R1 = readRestockTargets('买好了', [
+    b2List([b2Item('i1', '牛肉', { recipeId: 'recipe-A' })])
+  ]);
+  check(
+    'B2-1 无商品名 + 仅 1 个带非空 recipeId 的候选 → 返回该候选',
+    b2R1.length === 1 && b2R1[0].id === 'i1' && b2R1[0].recipeId === 'recipe-A',
+    `names=${b2Names(b2R1)}`
+  );
+
+  // B2-2:无商品名 + 多候选同一非空 recipeId → 返回该 recipeId 全组
+  const b2R2 = readRestockTargets('买好了', [
+    b2List([
+      b2Item('i1', '牛肉', { recipeId: 'recipe-A' }),
+      b2Item('i2', '豌豆', { recipeId: 'recipe-A' })
+    ])
+  ]);
+  check(
+    'B2-2 无商品名 + 多候选同 recipeId → 返回该 recipeId 全组',
+    b2R2.length === 2 && b2R2.every((t) => t.recipeId === 'recipe-A'),
+    `names=${b2Names(b2R2)}`
+  );
+
+  // B2-3:无商品名 + 多候选两个不同 recipeId → 不猜,返回 []
+  const b2R3 = readRestockTargets('买好了', [
+    b2List([
+      b2Item('i1', '牛肉', { recipeId: 'recipe-A' }),
+      b2Item('i2', '豌豆', { recipeId: 'recipe-B' })
+    ])
+  ]);
+  check(
+    'B2-3 无商品名 + 两个不同 recipeId → 不猜,返回 []',
+    b2R3.length === 0,
+    `names=${b2Names(b2R3)}`
+  );
+
+  // B2-4:无商品名 + recipeId 项 + 无 recipeId 普通项 → 不猜,返回 []
+  const b2R4 = readRestockTargets('买好了', [
+    b2List([
+      b2Item('i1', '牛肉', { recipeId: 'recipe-A' }),
+      b2Item('i2', '面巾纸')
+    ])
+  ]);
+  check(
+    'B2-4 无商品名 + recipeId 项与普通项混合 → 不猜,返回 []',
+    b2R4.length === 0,
+    `names=${b2Names(b2R4)}`
+  );
+
+  // B2-5:「都」+ 多候选不同 recipeId → 新规则下「都 / 全」不再是独立全选依据,返回 []
+  const b2R5 = readRestockTargets('都买好了', [
+    b2List([
+      b2Item('i1', '牛肉', { recipeId: 'recipe-A' }),
+      b2Item('i2', '豌豆', { recipeId: 'recipe-B' })
+    ])
+  ]);
+  check(
+    'B2-5 「都买好了」+ 多候选不同 recipeId → 「都」不再是全选依据,返回 []',
+    b2R5.length === 0,
+    `names=${b2Names(b2R5)}`
+  );
+
+  // B2-6:显式点名优先 —— 「买牛肉了」只返回牛肉,不受兜底影响
+  const b2R6 = readRestockTargets('买牛肉了', [
+    b2List([b2Item('i1', '牛肉'), b2Item('i2', '豌豆')])
+  ]);
+  check(
+    'B2-6 显式点名「买牛肉了」→ 只返回牛肉(点名优先不被兜底破坏)',
+    b2R6.length === 1 && b2R6[0].name === '牛肉',
+    `names=${b2Names(b2R6)}`
+  );
+
+  // B2-7:候选中一个已 restocked、一个未 restocked → 有效候选只剩 1 条且无 recipeId → 新规则返回 []
+  const b2R7 = readRestockTargets('买好了', [
+    b2List([
+      b2Item('i1', '牛肉', { restockedAt: '2026-03-02T00:00:00.000Z' }),
+      b2Item('i2', '豌豆')
+    ])
+  ]);
+  check(
+    'B2-7 已 restocked 项被排除 → 剩余单候选无 recipeId,不凭条数猜,返回 []',
+    b2R7.length === 0,
+    `names=${b2Names(b2R7)}`
+  );
+
+  // B2-8:候选中一个 cancelled、一个有效 → 有效候选只剩 1 条且无 recipeId → 新规则返回 []
+  const b2R8 = readRestockTargets('买好了', [
+    b2List([
+      b2Item('i1', '牛肉', { status: 'cancelled' }),
+      b2Item('i2', '豌豆')
+    ])
+  ]);
+  check(
+    'B2-8 cancelled 项被排除 → 剩余单候选无 recipeId,不凭条数猜,返回 []',
+    b2R8.length === 0,
+    `names=${b2Names(b2R8)}`
+  );
+
+  // B2-9:所有候选都 cancelled 或已 restocked → 无有效候选,返回 []
+  const b2R9 = readRestockTargets('买好了', [
+    b2List([
+      b2Item('i1', '牛肉', { status: 'cancelled' }),
+      b2Item('i2', '豌豆', { restockedAt: '2026-03-02T00:00:00.000Z' })
+    ])
+  ]);
+  check(
+    'B2-9 全部候选 cancelled / 已 restocked → 无有效候选,返回 []',
+    b2R9.length === 0,
+    `names=${b2Names(b2R9)}`
   );
 
   /* ---------- R1：制作消耗不越界、不被旧快照覆盖 ---------- */
