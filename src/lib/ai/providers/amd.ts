@@ -72,6 +72,30 @@ export class AMDProvider implements AIProvider {
         throw new Error('Invalid response format from AMD service');
       }
 
+      // 响应长度诊断：只看 finish_reason / token 用量，不打印内容与 Prompt。
+      // finish_reason === 'length' 即生成被 max_tokens 截断，是「回复没说完」的直接证据。
+      const finishReason = data.choices?.[0]?.finish_reason;
+      const usage = data.usage;
+      const completionTokens = typeof usage?.completion_tokens === 'number'
+        ? usage.completion_tokens
+        : undefined;
+      const promptTokens = typeof usage?.prompt_tokens === 'number'
+        ? usage.prompt_tokens
+        : undefined;
+      if (finishReason === 'length') {
+        console.warn('[AMD] response truncated by length limit', {
+          finish_reason: finishReason,
+          completion_tokens: completionTokens,
+          prompt_tokens: promptTokens
+        });
+      } else {
+        console.info('[AMD] response length diagnostics', {
+          finish_reason: finishReason,
+          completion_tokens: completionTokens,
+          prompt_tokens: promptTokens
+        });
+      }
+
       const content = data.choices?.[0]?.message?.content;
 
       if (!content) {

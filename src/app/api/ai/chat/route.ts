@@ -712,7 +712,7 @@ ${formatRealityContext(realityContext)}
               { role: 'user', content: message }
             ],
             temperature: 0.7,
-            maxTokens: 256
+            maxTokens: 512
           });
         } catch (error) {
           console.error('AI service call failed:', {
