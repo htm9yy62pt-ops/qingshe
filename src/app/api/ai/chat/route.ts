@@ -7,6 +7,7 @@ import { extractIngredientRecord, buildIngredientDraft, tryParseInventoryRecord,
 import type { IngredientRecordDraft, IngredientRecordData } from '@/lib/ai/record';
 import { parseConfirmation, isIngredientDraftDiscard, readCardCommand } from '@/lib/ai/confirmation';
 import { chatWithAI } from '@/lib/ai/service';
+import { getAIConfigStatus } from '@/lib/ai/providers/config';
 import {
   routeAITask,
   continueConsumableTask,
@@ -36,21 +37,12 @@ import type { RecommendedRecipe, ChatRequestBody, ChatApiResponse } from '@/lib/
 
 export async function POST(req: NextRequest) {
   try {
-    // 验证 API Key 是否存在
-    const apiKey = process.env.AMD_AI_API_KEY;
-    const model = process.env.AMD_AI_MODEL;
-
-    if (!apiKey) {
+    // 配置门：provider 是否受支持、key/model 是否齐全，统一交给 config 探针判定。
+    // route 不再直接读环境变量，也不把 provider 细节 / 缺失项写进响应体。
+    if (!getAIConfigStatus().configured) {
       return Response.json(
-        { error: 'Missing AMD AI API key configuration' },
-        { status: 500 }
-      );
-    }
-
-    if (!model) {
-      return Response.json(
-        { error: 'Missing AMD AI model configuration' },
-        { status: 500 }
+        { error: '抱歉，AI 服务尚未正确配置，请稍后再试。' },
+        { status: 503 }
       );
     }
 
