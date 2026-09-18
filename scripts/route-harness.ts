@@ -44,6 +44,12 @@ import { isIngredientDraftDiscard } from '../src/lib/ai/confirmation';
 import * as aiService from '../src/lib/ai/service';
 import * as intentService from '../src/lib/ai/intent';
 import * as recordService from '../src/lib/ai/record';
+import {
+  getAIProviderName,
+  getAIConfigStatus,
+  isAIConfigured
+} from '../src/lib/ai/providers/config';
+import { getAIProvider } from '../src/lib/ai/providers/index';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 
@@ -183,6 +189,211 @@ async function main() {
 let sessionDrafts: any[] = [];
 
 realLog('\n=== Qingshe AI Intent Routing 回归 ===\n');
+
+// ---- AI 配置状态探针（config.ts）---------------------------------------
+/* 纯函数、只读 process.env、不构造 Provider、不发网络请求，故放在最前：
+ * 无论后面的 LLM 链路是否可用，本块的确定性结论都能先落地。 */
+{
+  // 本块会临时改写环境变量，逐条快照、finally 里还原，不污染后面任何用例。
+  const ENV_KEYS = ['AI_PROVIDER', 'AMD_AI_API_KEY', 'AMD_AI_MODEL'] as const;
+  const saved: Record<string, string | undefined> = {};
+  for (const k of ENV_KEYS) saved[k] = process.env[k];
+  // undefined 表示「该键不存在」，用 delete 还原；只有已存在的键才赋值回去。
+  const setEnv = (next: Record<string, string | undefined>) => {
+    for (const [k, v] of Object.entries(next)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+  };
+  // 假值只用于占位，断言里绝不输出它（missing/reason 也不允许带它）。
+  const FAKE_KEY = 'harness-fake-key';
+  const FAKE_MODEL = 'harness-fake-model';
+
+  try {
+    // AC1 完整配置 → configured:true
+    setEnv({ AI_PROVIDER: 'amd', AMD_AI_API_KEY: FAKE_KEY, AMD_AI_MODEL: FAKE_MODEL });
+    const full = getAIConfigStatus();
+    {
+      const pass =
+        full.provider === 'amd' &&
+        full.configured === true &&
+        Array.isArray(full.missing) &&
+        full.missing.length === 0 &&
+        isAIConfigured() === true;
+      summary.push({ label: 'AC1 完整配置 → configured:true', pass, detail: JSON.stringify(full) });
+      realLog(`${pass ? 'PASS' : 'FAIL'}  AC1 完整配置 → configured:true`);
+      if (!pass) realLog(`      ${JSON.stringify(full)}`);
+    }
+
+    // AC2 缺 API Key → configured:false，missing 含「API Key」
+    setEnv({ AI_PROVIDER: 'amd', AMD_AI_API_KEY: undefined, AMD_AI_MODEL: FAKE_MODEL });
+    const noKey = getAIConfigStatus();
+    {
+      const pass =
+        noKey.provider === 'amd' &&
+        noKey.configured === false &&
+        noKey.missing.includes('API Key') &&
+        !noKey.missing.includes('模型名') &&
+        isAIConfigured() === false;
+      summary.push({
+        label: 'AC2 缺 API Key → configured:false，missing 含「API Key」',
+        pass,
+        detail: JSON.stringify({ missing: noKey.missing })
+      });
+      realLog(`${pass ? 'PASS' : 'FAIL'}  AC2 缺 API Key → configured:false`);
+      if (!pass) realLog(`      ${JSON.stringify(noKey)}`);
+    }
+
+    // AC3 缺模型 → configured:false，missing 含「模型名」
+    setEnv({ AI_PROVIDER: 'amd', AMD_AI_API_KEY: FAKE_KEY, AMD_AI_MODEL: undefined });
+    const noModel = getAIConfigStatus();
+    {
+      const pass =
+        noModel.provider === 'amd' &&
+        noModel.configured === false &&
+        noModel.missing.includes('模型名') &&
+        !noModel.missing.includes('API Key') &&
+        isAIConfigured() === false;
+      summary.push({
+        label: 'AC3 缺模型 → configured:false，missing 含「模型名」',
+        pass,
+        detail: JSON.stringify({ missing: noModel.missing })
+      });
+      realLog(`${pass ? 'PASS' : 'FAIL'}  AC3 缺模型 → configured:false`);
+      if (!pass) realLog(`      ${JSON.stringify(noModel)}`);
+    }
+
+    // AC4 未知 provider → configured:false，missing 为空、reason 非空
+    setEnv({ AI_PROVIDER: 'openai', AMD_AI_API_KEY: FAKE_KEY, AMD_AI_MODEL: FAKE_MODEL });
+    const unknown = getAIConfigStatus();
+    {
+      const pass =
+        unknown.provider === 'openai' &&
+        unknown.configured === false &&
+        Array.isArray(unknown.missing) &&
+        unknown.missing.length === 0 &&
+        typeof unknown.reason === 'string' &&
+        unknown.reason.length > 0 &&
+        isAIConfigured() === false;
+      summary.push({
+        label: 'AC4 未知 provider → configured:false，reason 非空',
+        pass,
+        detail: JSON.stringify({ reason: unknown.reason })
+      });
+      realLog(`${pass ? 'PASS' : 'FAIL'}  AC4 未知 provider → configured:false`);
+      if (!pass) realLog(`      ${JSON.stringify(unknown)}`);
+    }
+
+    // AC5 未设置 AI_PROVIDER → 缺省 amd
+    setEnv({ AI_PROVIDER: undefined, AMD_AI_API_KEY: FAKE_KEY, AMD_AI_MODEL: FAKE_MODEL });
+    {
+      const name = getAIProviderName();
+      const status = getAIConfigStatus();
+      const pass = name === 'amd' && status.provider === 'amd' && status.configured === true;
+      summary.push({
+        label: 'AC5 未设置 AI_PROVIDER → 缺省 amd 且判定可用',
+        pass,
+        detail: JSON.stringify({ name, provider: status.provider })
+      });
+      realLog(`${pass ? 'PASS' : 'FAIL'}  AC5 未设置 AI_PROVIDER → 缺省 amd`);
+      if (!pass) realLog(`      ${JSON.stringify({ name, status })}`);
+    }
+
+    // AC6 显式设置 AI_PROVIDER（含大小写归一）→ 能正确读取
+    setEnv({ AI_PROVIDER: 'AMD', AMD_AI_API_KEY: FAKE_KEY, AMD_AI_MODEL: FAKE_MODEL });
+    {
+      const name = getAIProviderName();
+      const status = getAIConfigStatus();
+      const pass = name === 'amd' && status.provider === 'amd' && status.configured === true;
+      summary.push({
+        label: 'AC6 显式 AI_PROVIDER=AMD → 归一为 amd 且判定可用',
+        pass,
+        detail: JSON.stringify({ name, provider: status.provider })
+      });
+      realLog(`${pass ? 'PASS' : 'FAIL'}  AC6 显式 AI_PROVIDER → 可正确读取`);
+      if (!pass) realLog(`      ${JSON.stringify({ name, status })}`);
+    }
+
+    // AC7 返回值不得泄漏任何密钥或环境变量名
+    setEnv({
+      AI_PROVIDER: 'openai',
+      AMD_AI_API_KEY: FAKE_KEY,
+      AMD_AI_MODEL: FAKE_MODEL
+    });
+    {
+      const all = [getAIConfigStatus(), getAIConfigStatus()];
+      setEnv({ AI_PROVIDER: 'amd', AMD_AI_API_KEY: undefined, AMD_AI_MODEL: undefined });
+      all.push(getAIConfigStatus());
+      const dump = JSON.stringify(all);
+      const pass = !dump.includes(FAKE_KEY) && !dump.includes(FAKE_MODEL) && !dump.includes('AMD_AI_');
+      summary.push({
+        label: 'AC7 返回值不含密钥值 / 环境变量名',
+        pass,
+        detail: dump.includes(FAKE_KEY) || dump.includes(FAKE_MODEL) ? '泄漏!' : 'clean'
+      });
+      realLog(`${pass ? 'PASS' : 'FAIL'}  AC7 返回值不含敏感信息`);
+      if (!pass) realLog(`      ${dump}`);
+    }
+
+    // 下面两条只测工厂与探针本身：不构造会发包的 AMDProvider，也不进 chatWithAI。
+    aiCalls = 0;
+
+    // AP1 未知 provider → 工厂必须抛错，且错误信息里只有 provider 名
+    setEnv({
+      AI_PROVIDER: 'unsupported_test_provider',
+      AMD_AI_API_KEY: FAKE_KEY,
+      AMD_AI_MODEL: FAKE_MODEL
+    });
+    {
+      let thrown: unknown = null;
+      try {
+        getAIProvider();
+      } catch (err) {
+        thrown = err;
+      }
+      const msg = thrown instanceof Error ? thrown.message : String(thrown ?? '');
+      const pass =
+        thrown !== null &&
+        /Unsupported AI provider/.test(msg) &&
+        !msg.includes(FAKE_KEY) &&
+        !msg.includes(FAKE_MODEL);
+      summary.push({
+        label: 'AP1 未知 provider → getAIProvider() 抛错且信息不含密钥',
+        pass,
+        detail: JSON.stringify({ threw: thrown !== null, msg })
+      });
+      realLog(`${pass ? 'PASS' : 'FAIL'}  AP1 未知 provider → 工厂抛错`);
+      if (!pass) realLog(`      ${JSON.stringify({ msg })}`);
+    }
+
+    // AP2 AI_PROVIDER=AMD → 只验名称归一，不实例化、不发请求
+    setEnv({ AI_PROVIDER: 'AMD', AMD_AI_API_KEY: FAKE_KEY, AMD_AI_MODEL: FAKE_MODEL });
+    {
+      const name = getAIProviderName();
+      const pass = name === 'amd';
+      summary.push({
+        label: 'AP2 AI_PROVIDER=AMD → getAIProviderName() 归一为 amd',
+        pass,
+        detail: JSON.stringify({ name })
+      });
+      realLog(`${pass ? 'PASS' : 'FAIL'}  AP2 AI_PROVIDER=AMD → 归一为 amd`);
+      if (!pass) realLog(`      ${JSON.stringify({ name })}`);
+    }
+
+    // AP3 证明上面两条确实零 LLM/网络调用
+    {
+      const pass = aiCalls === 0;
+      summary.push({
+        label: 'AP3 工厂用例零 LLM 调用（aiCalls=0）',
+        pass,
+        detail: JSON.stringify({ aiCalls })
+      });
+      realLog(`${pass ? 'PASS' : 'FAIL'}  AP3 工厂用例零 LLM 调用`);
+    }
+  } finally {
+    setEnv(saved);
+  }
+}
 
 // Test 1：购买消耗品不得被识别为食材
 const t1 = await chat('T1 「今天买了1箱面巾纸」→ add_consumable / collecting', {
