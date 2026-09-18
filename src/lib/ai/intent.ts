@@ -1,5 +1,6 @@
 import { NextRequest } from 'next/server';
 import { chatWithAI } from './service';
+import { getAIConfigStatus } from './providers/config';
 
 export type QingsheIntent =
   | "REALITY_RECORD"
@@ -25,14 +26,11 @@ export interface IntentResult {
 }
 
 export async function classifyIntent(message: string): Promise<IntentResult> {
-  const apiKey = process.env.AMD_AI_API_KEY;
-  const model = process.env.AMD_AI_MODEL;
-
-  if (!apiKey || !model) {
+  if (!getAIConfigStatus().configured) {
     return {
       intent: "LIFE_SOLUTION",
       confidence: 0,
-      reason: "Intent classification fallback due to missing API configuration",
+      reason: "Intent classification unavailable: AI service not configured",
       requiredData: []
     };
   }

@@ -1,5 +1,6 @@
 import { RealityDataType } from './intent';
 import { chatWithAI } from './service';
+import { getAIConfigStatus } from './providers/config';
 import { parseChineseNumber } from './tasks/shopping-task';
 import {
   bareIngredientName,
@@ -443,11 +444,8 @@ export async function extractIngredientRecord(
   message: string, 
   existingDraft?: IngredientRecordDraft
 ): Promise<IngredientRecordData> {
-  const apiKey = process.env.AMD_AI_API_KEY;
-  const model = process.env.AMD_AI_MODEL;
-
-  if (!apiKey || !model) {
-    throw new Error('Missing AMD AI API configuration');
+  if (!getAIConfigStatus().configured) {
+    throw new Error('AI 服务尚未配置');
   }
 
   // 构建系统提示词
