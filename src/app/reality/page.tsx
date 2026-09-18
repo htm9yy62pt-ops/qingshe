@@ -5,7 +5,7 @@ import Link from 'next/link';
 import AddIngredientModal from '@/components/AddIngredientModal';
 import { InventoryIngredient } from '@/lib/types/ingredient';
 import { Reminder, ReminderType } from '@/lib/types/reminder';
-import { loadIngredients, saveIngredients, groupIngredientsByStorage } from '@/lib/reality/ingredients';
+import { loadIngredients, saveIngredients, groupIngredientsByStorage, updateIngredient } from '@/lib/reality/ingredients';
 import { loadReminders } from '@/lib/reality/reminders';
 import { getDueReminders } from '@/lib/reality/reminder-engine';
 
@@ -67,10 +67,12 @@ const getIngredientStatus = (expiryDate: string): 'normal' | 'expiring' | 'expir
  */
 function IngredientRow({
   ingredient,
-  onDelete
+  onDelete,
+  onEdit
 }: {
   ingredient: InventoryIngredient;
   onDelete: (id: string) => void;
+  onEdit: (ingredient: InventoryIngredient) => void;
 }) {
   const status = getIngredientStatus(ingredient.expiryDate);
   let statusClass = '';
@@ -108,14 +110,27 @@ function IngredientRow({
           )}
         </div>
 
-        <button
-          onClick={() => onDelete(ingredient.id)}
-          className="text-gray-400 hover:text-red-500"
-        >
-          <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
-            <path fillRule="evenodd" d="M9 2a1 1 0 00-.894.553L7.382 4H4a1 1 0 000 2v10a2 2 0 002 2h8a2 2 0 002-2V6a1 1 0 100-2h-3.382l-.724-1.447A1 1 0 0011 2H9zM7 8a1 1 0 012 0v6a1 1 0 11-2 0V8zm5-1a1 1 0 00-1 1v6a1 1 0 102 0V8a1 1 0 00-1-1z" clipRule="evenodd" />
-          </svg>
-        </button>
+        <div className="flex items-center gap-1">
+          <button
+            onClick={() => onEdit(ingredient)}
+            className="text-gray-400 hover:text-blue-500"
+            aria-label="编辑食材"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+              <path d="m5.433 13.917 1.262-3.155A4 4 0 0 1 7.58 9.42l6.92-6.918a2.121 2.121 0 0 1 3 3l-6.92 6.918c-.383.383-.84.685-1.343.886l-3.154 1.262a.5.5 0 0 1-.65-.65z" />
+              <path d="M3.5 5.75c0-.69.56-1.25 1.25-1.25H10A.75.75 0 0 0 10 3H4.75A2.75 2.75 0 0 0 2 5.75v9.5A2.75 2.75 0 0 0 4.75 18h9.5A2.75 2.75 0 0 0 17 15.25V10a.75.75 0 0 0-1.5 0v5.25c0 .69-.56 1.25-1.25 1.25h-9.5c-.69 0-1.25-.56-1.25-1.25v-9.5z" />
+            </svg>
+          </button>
+          <button
+            onClick={() => onDelete(ingredient.id)}
+            className="text-gray-400 hover:text-red-500"
+            aria-label="删除食材"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+              <path fillRule="evenodd" d="M9 2a1 1 0 00-.894.553L7.382 4H4a1 1 0 000 2v10a2 2 0 002 2h8a2 2 0 002-2V6a1 1 0 100-2h-3.382l-.724-1.447A1 1 0 0011 2H9zM7 8a1 1 0 012 0v6a1 1 0 11-2 0V8zm5-1a1 1 0 00-1 1v6a1 1 0 102 0V8a1 1 0 00-1-1z" clipRule="evenodd" />
+            </svg>
+          </button>
+        </div>
       </div>
     </div>
   );
@@ -126,6 +141,8 @@ export default function RealityPage() {
   const [ingredients, setIngredients] = useState<InventoryIngredient[]>([]);
   const [reminders, setReminders] = useState<Reminder[]>([]);
   const [isModalOpen, setIsModalOpen] = useState(false);
+  /** 当前编辑中的食材：null = 新增模式，非空 = 编辑模式（Modal 以 initialValue 填充） */
+  const [editingIngredient, setEditingIngredient] = useState<InventoryIngredient | null>(null);
 
   // 页面加载时从 localStorage 加载数据
   useEffect(() => {
@@ -157,11 +174,23 @@ export default function RealityPage() {
   const kitchenGroups = groupIngredientsByStorage(ingredients);
 
   const handleAddIngredient = () => {
+    // 新增入口必须清空编辑态，否则 Modal 会拿着上一条记录进入编辑模式
+    setEditingIngredient(null);
     setIsModalOpen(true);
   };
 
   const handleCloseModal = () => {
     setIsModalOpen(false);
+    setEditingIngredient(null);
+  };
+
+  /**
+   * 编辑入口：记住当前编辑的食材，由 Modal 按 initialValue 填充表单。
+   * 提交动作在 handleIngredientSubmit 里按本状态区分新增 / 编辑。
+   */
+  const handleEditIngredient = (ingredient: InventoryIngredient) => {
+    setEditingIngredient(ingredient);
+    setIsModalOpen(true);
   };
 
   // 添加新食材
@@ -175,6 +204,30 @@ export default function RealityPage() {
     const updatedIngredients = [...ingredients, newIngredient];
     setIngredients(updatedIngredients);
     saveIngredients(updatedIngredients);
+  };
+
+  /**
+   * 保存编辑：写基线必须现读 localStorage（loadIngredients），不能用页面 state ——
+   * Modal 打开期间别的入口改过的库存不在页面快照里，拿旧快照当基线会覆盖掉那些变化。
+   * updateIngredient 按 id 更新，找不到 id 时原样返回、绝不追加新记录。
+   */
+  const saveEditedIngredient = (ingredientData: Omit<InventoryIngredient, 'id' | 'createdAt'>) => {
+    if (!editingIngredient) return;
+    const latest = loadIngredients();
+    const updated = updateIngredient(latest, editingIngredient.id, ingredientData);
+    setIngredients(updated);
+  };
+
+  /**
+   * Modal 的统一提交入口：两种模式共用同一个回调（Modal 不区分保存语义），
+   * 这里按 editingIngredient 分流到新增或编辑的落库逻辑。
+   */
+  const handleIngredientSubmit = (ingredientData: Omit<InventoryIngredient, 'id' | 'createdAt'>) => {
+    if (editingIngredient) {
+      saveEditedIngredient(ingredientData);
+    } else {
+      addNewIngredient(ingredientData);
+    }
   };
 
   // 删除食材
@@ -282,6 +335,7 @@ export default function RealityPage() {
                                 key={ingredient.id}
                                 ingredient={ingredient}
                                 onDelete={deleteIngredient}
+                                onEdit={handleEditIngredient}
                               />
                             ))}
                           </div>
@@ -406,7 +460,8 @@ export default function RealityPage() {
         <AddIngredientModal 
           isOpen={isModalOpen} 
           onClose={handleCloseModal} 
-          onAddIngredient={addNewIngredient}
+          onAddIngredient={handleIngredientSubmit}
+          initialValue={editingIngredient ?? undefined}
         />
       </main>
     </div>

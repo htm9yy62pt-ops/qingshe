@@ -63,7 +63,9 @@ import {
   saveIngredients,
   commitIngredients,
   consumeIngredients,
-  groupIngredientsByStorage
+  groupIngredientsByStorage,
+  updateIngredient,
+  type IngredientPatch
 } from '../src/lib/reality/ingredients';
 import { updateInventory } from '../src/lib/reality/inventory-update';
 import {
@@ -939,6 +941,139 @@ async function main() {
     'B2-9 全部候选 cancelled / 已 restocked → 无有效候选,返回 []',
     b2R9.length === 0,
     `names=${b2Names(b2R9)}`
+  );
+
+  /* ---------- P1U：厨房库存单条编辑（updateIngredient） ---------- */
+
+  const seedIng = (
+    over: Partial<InventoryIngredient> & { id: string; name: string }
+  ): InventoryIngredient => ({
+    quantity: '1',
+    unit: 'g',
+    category: '蔬菜',
+    purchaseDate: '2026-03-01',
+    expiryDate: '2026-03-31',
+    storageLocation: '冷藏',
+    createdAt: '2026-03-01',
+    ...over
+  });
+  const findIngById = (items: InventoryIngredient[], id: string) =>
+    items.find((i) => i.id === id);
+
+  // P1U-1 正常按 id 更新三个字段，并确认新值真的落盘
+  resetStorage();
+  saveIngredients([
+    seedIng({ id: 'u1_a', name: '鸡蛋', quantity: '6', unit: '个' }),
+    seedIng({ id: 'u1_b', name: '牛奶' })
+  ]);
+  const u1After = updateIngredient(loadIngredients(), 'u1_a', {
+    quantity: '12',
+    unit: '瓶',
+    storageLocation: '橱柜'
+  });
+  const u1Row = findIngById(u1After, 'u1_a');
+  check(
+    'P1U-1 按 id 更新 quantity / unit / storageLocation 为新值',
+    u1Row?.quantity === '12' && u1Row.unit === '瓶' && u1Row.storageLocation === '橱柜',
+    `got ${u1Row?.quantity} / ${u1Row?.unit} / ${u1Row?.storageLocation}`
+  );
+  check(
+    'P1U-1b 新值已真正落盘（重读 localStorage 一致）',
+    findIngById(loadIngredients(), 'u1_a')?.quantity === '12',
+    'localStorage 未更新'
+  );
+
+  // P1U-2 patch 只动明确给出的字段：其余字段逐字段保持原值
+  const u2Before = findIngById(loadIngredients(), 'u1_a');
+  const u2After = updateIngredient(loadIngredients(), 'u1_a', { quantity: '24' });
+  const u2Row = findIngById(u2After, 'u1_a');
+  check(
+    'P1U-2 patch 只改明确提供的字段，其余字段逐字段保持原值',
+    u2Row?.quantity === '24' &&
+      u2Row.name === u2Before?.name &&
+      u2Row.unit === u2Before?.unit &&
+      u2Row.category === u2Before?.category &&
+      u2Row.purchaseDate === u2Before?.purchaseDate &&
+      u2Row.expiryDate === u2Before?.expiryDate,
+    `before=${JSON.stringify({ n: u2Before?.name, u: u2Before?.unit, c: u2Before?.category })} after=${JSON.stringify({ n: u2Row?.name, u: u2Row?.unit, c: u2Row?.category })}`
+  );
+
+  // P1U-3 id 与 createdAt 保留（patch 类型里根本没这两键）
+  check(
+    'P1U-3 更新后 id 与 createdAt 保持原值',
+    u2Row?.id === 'u1_a' && u2Row.createdAt === '2026-03-01',
+    `got id=${u2Row?.id} createdAt=${u2Row?.createdAt}`
+  );
+
+  // P1U-4 运行时 patch 夹带 id / createdAt：原值仍然保留
+  const u4After = updateIngredient(loadIngredients(), 'u1_a', {
+    quantity: '48',
+    id: 'hacked_id',
+    createdAt: '1970-01-01'
+  } as unknown as IngredientPatch);
+  const u4Row = findIngById(u4After, 'u1_a');
+  check(
+    'P1U-4 patch 运行时夹带 id / createdAt，原值仍然保留',
+    u4Row?.id === 'u1_a' && u4Row.createdAt === '2026-03-01' && u4Row.quantity === '48',
+    `got id=${u4Row?.id} createdAt=${u4Row?.createdAt} qty=${u4Row?.quantity}`
+  );
+
+  // P1U-5 空白名称不写入：延续 commitIngredients「没名字的记录不进厨房」
+  const u5After = updateIngredient(loadIngredients(), 'u1_a', { name: '   ' });
+  check(
+    'P1U-5 patch 名称为空白 → 保留原名称，不写入空名记录',
+    findIngById(u5After, 'u1_a')?.name === '鸡蛋',
+    `got name="${findIngById(u5After, 'u1_a')?.name}"`
+  );
+
+  // P1U-6 空串清空：storageLocation '' = 未指定，expiryDate '' = 无保质期
+  resetStorage();
+  saveIngredients([
+    seedIng({ id: 'u6_a', name: '酱油', storageLocation: '橱柜', expiryDate: '2027-01-01' })
+  ]);
+  const u6After = updateIngredient(loadIngredients(), 'u6_a', {
+    storageLocation: '',
+    expiryDate: ''
+  });
+  const u6Row = findIngById(u6After, 'u6_a');
+  check(
+    'P1U-6 空字符串可清空 storageLocation 与 expiryDate（= 未指定 / 无保质期）',
+    u6Row?.storageLocation === '' && u6Row.expiryDate === '',
+    `got loc="${u6Row?.storageLocation}" exp="${u6Row?.expiryDate}"`
+  );
+
+  // P1U-7 不存在的 id：返回原数组（同一引用）、长度不变、不新增记录
+  const u7Before = loadIngredients();
+  const u7After = updateIngredient(u7Before, 'does_not_exist', { quantity: '99' });
+  check(
+    'P1U-7 不存在的 id → 返回原数组，长度不变且不新增记录',
+    u7After === u7Before &&
+      u7After.length === u7Before.length &&
+      !u7After.some((i) => i.id === 'does_not_exist'),
+    `before=${u7Before.length} after=${u7After.length} sameRef=${u7After === u7Before}`
+  );
+
+  // P1U-8 改一条不影响其他记录：另一条逐字段深比对
+  resetStorage();
+  saveIngredients([
+    seedIng({ id: 'u8_a', name: '鸡蛋', quantity: '6', storageLocation: '冷藏' }),
+    seedIng({
+      id: 'u8_b',
+      name: '牛肉',
+      quantity: '500',
+      unit: 'g',
+      storageLocation: '冷冻',
+      category: '肉类'
+    })
+  ]);
+  const u8OtherBefore = JSON.stringify(findIngById(loadIngredients(), 'u8_b'));
+  updateIngredient(loadIngredients(), 'u8_a', { quantity: '10', storageLocation: '常温' });
+  const u8OtherAfter = JSON.stringify(findIngById(loadIngredients(), 'u8_b'));
+  check(
+    'P1U-8 更新一条记录不影响其他记录（另一条逐字段一致）',
+    u8OtherBefore === u8OtherAfter &&
+      findIngById(loadIngredients(), 'u8_a')?.quantity === '10',
+    `before=${u8OtherBefore} after=${u8OtherAfter}`
   );
 
   /* ---------- R1：制作消耗不越界、不被旧快照覆盖 ---------- */

@@ -95,6 +95,67 @@ export function commitIngredients(records: readonly Record<string, unknown>[]): 
   return { items, added: additions.length };
 }
 
+/**
+ * 库存编辑 patch：只列允许用户改写的字段。
+ *
+ * 语义沿用 consumable-updates 的条件展开：键缺失（undefined）=「这列我不动」，
+ * 传空串 =「清空这列」——日期与储存位置都可以被显式清掉（ expiryDate '' = 无保质期，
+ * storageLocation '' = 未指定，与表单的「未指定」选项同一口径）。
+ * id / createdAt 不在此列，永远由原记录钉死。
+ */
+export type IngredientPatch = {
+  name?: string;
+  quantity?: string;
+  unit?: string;
+  category?: string;
+  purchaseDate?: string;
+  expiryDate?: string;
+  storageLocation?: string;
+};
+
+/**
+ * 按 id 编辑单条库存：读入当前数组，patch 只覆盖被显式给出的字段，随后整盘写回。
+ *
+ * `id` / `createdAt` 在合并之后被原记录重新钉死一遍 —— 就算调用方在运行时
+ * 往 patch 里夹带这两列也改不动，身份与入库时间不参与编辑。
+ * 名称沿用 commitIngredients 的口径（没名字的记录不进厨房）：patch 给了名字但 trim 后为空，
+ * 该字段退回原值，不让编辑把一行改没名字。
+ * status 由消耗流程（inventory-update）维护，不开放给编辑表单。
+ * 找不到 id 时原样返回、不写盘：编辑一个不存在的条目不是一次写操作。
+ *
+ * @returns 落库后的完整库存；未命中时返回入参原数组
+ */
+export function updateIngredient(
+  items: InventoryIngredient[],
+  id: string,
+  patch: IngredientPatch
+): InventoryIngredient[] {
+  const target = items.find((item) => item.id === id);
+  if (!target) return items;
+
+  const trimmedName =
+    patch.name !== undefined ? patch.name.trim() : undefined;
+
+  const next: InventoryIngredient = {
+    ...target,
+    ...(patch.quantity !== undefined ? { quantity: patch.quantity } : {}),
+    ...(patch.unit !== undefined ? { unit: patch.unit } : {}),
+    ...(patch.category !== undefined ? { category: patch.category } : {}),
+    ...(patch.purchaseDate !== undefined ? { purchaseDate: patch.purchaseDate } : {}),
+    ...(patch.expiryDate !== undefined ? { expiryDate: patch.expiryDate } : {}),
+    ...(patch.storageLocation !== undefined
+      ? { storageLocation: patch.storageLocation }
+      : {}),
+    ...(trimmedName ? { name: trimmedName } : {}),
+    id: target.id,
+    createdAt: target.createdAt
+  };
+
+  const nextItems = items.map((item) => (item.id === id ? next : item));
+  saveIngredients(nextItems);
+  return nextItems;
+}
+
 export interface KitchenStorageGroup {
   /** null = 未指定（空值与旧数据缺字段）；只用于 React key 与归组，不参与落库 */
   location: KitchenStorageLocation | '其他' | null;
