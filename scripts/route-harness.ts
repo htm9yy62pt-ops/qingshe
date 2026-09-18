@@ -395,6 +395,93 @@ realLog('\n=== Qingshe AI Intent Routing 回归 ===\n');
   }
 }
 
+// ---- AR：业务层配置门（route / intent / record）---------------------------------------
+/* AC/AP 覆盖的是探针与工厂本身；这里验的是「探针被业务层正确接线」：
+ * 缺配置时 route 拦在 LLM 之前（503 + 零调用），intent 静默降级、record 抛错。
+ * 复用 makeRequest + POST，不另造 HTTP 框架；不 mock config.ts。 */
+{
+  const ENV_KEYS = ['AI_PROVIDER', 'AMD_AI_API_KEY', 'AMD_AI_MODEL'] as const;
+  const saved: Record<string, string | undefined> = {};
+  for (const k of ENV_KEYS) saved[k] = process.env[k];
+  const setEnv = (next: Record<string, string | undefined>) => {
+    for (const [k, v] of Object.entries(next)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+  };
+  // 占位值只为了让探针的 missing 项变空，断言与日志里都不输出它。
+  const PLACEHOLDER = 'harness-placeholder';
+  const MIN_BODY = { message: '今天买了牛肉', ingredients: [], consumables: [] };
+  const CONFIG_ERROR = { error: '抱歉，AI 服务尚未正确配置，请稍后再试。' };
+
+  try {
+    // AR1 缺 API Key → route 503，且配置门发生在任何 LLM 调用之前
+    setEnv({ AI_PROVIDER: 'amd', AMD_AI_API_KEY: undefined, AMD_AI_MODEL: PLACEHOLDER });
+    aiCalls = 0;
+    {
+      const res = await POST(makeRequest(MIN_BODY));
+      const body = await res.json();
+      const pass =
+        res.status === 503 &&
+        JSON.stringify(body) === JSON.stringify(CONFIG_ERROR) &&
+        aiCalls === 0;
+      summary.push({
+        label: 'AR1 缺 API Key → route 503 且零 LLM 调用',
+        pass,
+        detail: JSON.stringify({ status: res.status, body })
+      });
+      realLog(`${pass ? 'PASS' : 'FAIL'}  AR1 缺 API Key → route 503`);
+      if (!pass) realLog(`      ${JSON.stringify({ status: res.status, body, aiCalls })}`);
+    }
+
+    // AR2 未知 provider → route 503（key/model 齐全，证明门覆盖 provider 而非只看 key/model）
+    setEnv({ AI_PROVIDER: 'unsupported_test_provider', AMD_AI_API_KEY: PLACEHOLDER, AMD_AI_MODEL: PLACEHOLDER });
+    aiCalls = 0;
+    {
+      const res = await POST(makeRequest(MIN_BODY));
+      const body = await res.json();
+      const pass =
+        res.status === 503 &&
+        JSON.stringify(body) === JSON.stringify(CONFIG_ERROR) &&
+        aiCalls === 0;
+      summary.push({
+        label: 'AR2 未知 provider → route 503 且零 LLM 调用',
+        pass,
+        detail: JSON.stringify({ status: res.status, body })
+      });
+      realLog(`${pass ? 'PASS' : 'FAIL'}  AR2 未知 provider → route 503`);
+      if (!pass) realLog(`      ${JSON.stringify({ status: res.status, body, aiCalls })}`);
+    }
+
+    // AR3 同一缺配置环境下：intent 降级（不抛）、record 抛错（不降级）——两种策略各自正确
+    setEnv({ AI_PROVIDER: 'amd', AMD_AI_API_KEY: undefined, AMD_AI_MODEL: PLACEHOLDER });
+    {
+      const r = await intentService.classifyIntent('我今晚吃什么');
+      let thrown: unknown = null;
+      try {
+        await recordService.extractIngredientRecord('今天买了牛肉');
+      } catch (err) {
+        thrown = err;
+      }
+      const thrownMsg = thrown instanceof Error ? thrown.message : String(thrown ?? '');
+      const pass =
+        r.intent === 'LIFE_SOLUTION' &&
+        r.confidence === 0 &&
+        JSON.stringify(r.requiredData) === '[]' &&
+        thrownMsg === 'AI 服务尚未配置';
+      summary.push({
+        label: 'AR3 缺配置 → intent 降级 / record 抛错',
+        pass,
+        detail: JSON.stringify({ intent: r.intent, confidence: r.confidence, thrown: thrownMsg })
+      });
+      realLog(`${pass ? 'PASS' : 'FAIL'}  AR3 缺配置 → intent 降级 / record 抛错`);
+      if (!pass) realLog(`      ${JSON.stringify({ intent: r.intent, confidence: r.confidence, requiredData: r.requiredData, thrown: thrownMsg })}`);
+    }
+  } finally {
+    setEnv(saved);
+  }
+}
+
 // Test 1：购买消耗品不得被识别为食材
 const t1 = await chat('T1 「今天买了1箱面巾纸」→ add_consumable / collecting', {
   message: '今天买了1箱面巾纸', ingredients: [], consumables: []
