@@ -143,11 +143,6 @@ export async function POST(req: NextRequest) {
       } satisfies ChatApiResponse);
     }
 
-    // 构建客户端数据，包含当前可用的用户真实数据
-    const clientData = {
-      ingredients: Array.isArray(ingredients) ? ingredients : []
-    };
-
     const safeUserRecipes: Recipe[] = Array.isArray(myRecipes) ? myRecipes : [];
 
     let responseMessage = '';
@@ -165,6 +160,13 @@ export async function POST(req: NextRequest) {
     const safeConsumables: ConsumableItem[] = Array.isArray(consumables)
       ? (consumables as ConsumableItem[])
       : [];
+    // 客户端数据：服务端无状态，真实快照只能由前端在请求瞬间带入。
+    // consumables 与 ingredients 同源（都来自请求体），不重复读 storage；
+    // 两者最终经 loadRealityContext 进入 prompt 的「用户真实数据」段。
+    const clientData = {
+      ingredients: Array.isArray(ingredients) ? ingredients : [],
+      consumables: safeConsumables
+    };
     // 采购清单快照由前端在发送瞬间现读 localStorage 带来（服务端无状态，拿不到 storage）。
     // complete_purchase 只认挂在清单上的东西：对不上清单就没有入库草稿，也不会有卡片。
     const safeShoppingLists: ShoppingList[] = Array.isArray(shoppingLists)

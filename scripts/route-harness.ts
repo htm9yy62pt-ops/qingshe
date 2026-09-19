@@ -44,6 +44,7 @@ import { isIngredientDraftDiscard } from '../src/lib/ai/confirmation';
 import * as aiService from '../src/lib/ai/service';
 import * as intentService from '../src/lib/ai/intent';
 import * as recordService from '../src/lib/ai/record';
+import { loadRealityContext } from '../src/lib/ai/reality-context';
 import {
   getAIProviderName,
   getAIConfigStatus,
@@ -480,6 +481,66 @@ realLog('\n=== Qingshe AI Intent Routing 回归 ===\n');
   } finally {
     setEnv(saved);
   }
+}
+
+// ---- RC：reality context 数据透传（loadRealityContext 纯函数）------------
+/* 曾有一段断裂：route.ts 已经拿到请求带来的 consumables 快照，却只把 ingredients
+ * 放进 clientData，于是 prompt 一边写着「系统当前没有获取到用户消耗品数据」，
+ * 一边确定性任务路由其实能用同一份数据。修好后 consumables 应原样透传。
+ * 本块直接验纯函数：有快照透传 / 无快照 null / ingredients 行为不变 / 全程零 LLM。 */
+{
+  const rcIngredients = [
+    // 远期日期 → 新鲜；历史日期 → 已过期：两条同时验证分析管线真的在跑
+    { id: 'i1', name: '番茄', quantity: 3, unit: '个', storage: 'fridge', expiryDate: '2027-06-01', createdAt: '2026-03-01T00:00:00.000Z' },
+    { id: 'i2', name: '牛奶', quantity: 1, unit: '盒', storage: 'fridge', expiryDate: '2020-01-01', createdAt: '2026-03-01T00:00:00.000Z' }
+  ];
+  // LLM 调用计数快照：透传是纯内存操作，不该惊动 chatWithAI（也就不该有真实请求）。
+  const aiCallsBefore = aiCalls;
+
+  // RC1 携带 consumables → 原样透传：是请求带来的那份数据，不是 null，也不是凭空造的
+  const rc1 = loadRealityContext(['consumables'], { consumables });
+  const rc1Pass =
+    Array.isArray(rc1.consumables) &&
+    rc1.consumables.length === 2 &&
+    rc1.consumables[0].id === 'c1' &&
+    rc1.consumables[0].name === '面巾纸' &&
+    rc1.consumables[1].name === '洗衣液' &&
+    rc1.ingredients === undefined; // 没要求的数据不填充
+  summary.push({ label: 'RC1 携带 consumables → context.consumables 透传真实快照', pass: rc1Pass, detail: JSON.stringify(rc1.consumables) });
+  realLog(`${rc1Pass ? 'PASS' : 'FAIL'}  RC1 携带 consumables → 透传`);
+
+  // RC2 无快照 / 空快照 / 非数组 → null：保持「系统没有获取到」语义，不凭空创建数据
+  const rc2Missing = loadRealityContext(['consumables'], {}).consumables;
+  const rc2Empty = loadRealityContext(['consumables'], { consumables: [] }).consumables;
+  const rc2Bad = loadRealityContext(['consumables'], { consumables: '面巾纸' }).consumables;
+  const rc2Pass = rc2Missing === null && rc2Empty === null && rc2Bad === null;
+  summary.push({ label: 'RC2 无 consumables 快照 → null（不凭空造数据）', pass: rc2Pass, detail: JSON.stringify({ rc2Missing, rc2Empty, rc2Bad }) });
+  realLog(`${rc2Pass ? 'PASS' : 'FAIL'}  RC2 无 consumables 快照 → null`);
+
+  // RC3 ingredients 行为不变：新鲜进 available、过期进 expired、空 → null、consumables 分支不被惊动
+  const rc3a = loadRealityContext(['ingredients'], { ingredients: rcIngredients });
+  const rc3b = loadRealityContext(['ingredients'], {});
+  const rc3Available = rc3a.ingredients?.availableIngredients?.map((i: { name: string }) => i.name) ?? null;
+  const rc3Expired = rc3a.ingredients?.expiredIngredients?.map((i: { name: string }) => i.name) ?? null;
+  const rc3Pass =
+    rc3a.ingredients != null &&
+    Array.isArray(rc3a.ingredients?.availableIngredients) &&
+    rc3Available?.includes('番茄') === true &&
+    !rc3Available?.includes('牛奶') &&
+    rc3Expired?.includes('牛奶') === true &&
+    rc3b.ingredients === null &&
+    rc3a.consumables === undefined;
+  summary.push({ label: 'RC3 ingredients 行为不变（新鲜进 available / 过期进 expired / 空 → null）', pass: rc3Pass, detail: JSON.stringify({ available: rc3Available, expired: rc3Expired, b: rc3b.ingredients }) });
+  realLog(`${rc3Pass ? 'PASS' : 'FAIL'}  RC3 ingredients 行为不变`);
+
+  // RC4 一次请求只取一个 context：不要求的字段保持 undefined，且全程零 LLM 调用
+  const rc4 = loadRealityContext(['consumables'], { consumables, ingredients: rcIngredients });
+  const rc4Pass =
+    rc4.consumables != null &&
+    rc4.ingredients === undefined &&
+    aiCalls === aiCallsBefore;
+  summary.push({ label: 'RC4 按需取数 + 透传零 LLM 调用', pass: rc4Pass, detail: JSON.stringify({ consumables: rc4.consumables?.length, ingredients: rc4.ingredients, aiCalls }) });
+  realLog(`${rc4Pass ? 'PASS' : 'FAIL'}  RC4 按需取数 + 零 LLM`);
 }
 
 // Test 1：购买消耗品不得被识别为食材

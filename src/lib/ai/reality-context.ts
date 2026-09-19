@@ -35,8 +35,13 @@ export function loadRealityContext(
   }
 
   if (requiredData.includes("consumables")) {
-    // Future implementation - currently not available in clientData
-    context.consumables = null;
+    // route.ts 把请求瞬间的消耗品快照放进 clientData.consumables。
+    // 有快照 → 原样透传给 prompt；空 / 缺失 → null（「系统没有获取到」），不凭空造数据。
+    if (clientData.consumables && Array.isArray(clientData.consumables) && clientData.consumables.length > 0) {
+      context.consumables = clientData.consumables;
+    } else {
+      context.consumables = null;
+    }
   }
 
   if (requiredData.includes("favorite_places")) {
